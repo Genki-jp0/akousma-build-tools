@@ -133,10 +133,10 @@ For Akousma use `Build-Akousma.ps1` (see above and `BUILD.txt`); the upstream st
 cd C:\data\projects\strawberry\strawberry-msvc
 
 rem For debug build:
-.\StrawberryMSVCBuild.ps1 -build_type debug -arch x86_64
+.\StrawberryMSVCBuild.ps1 -build_type debug -arch x86_64 -build_strawberry $true
 
 rem For release build:
-.\StrawberryMSVCBuild.ps1 -build_type release -arch x86_64
+.\StrawberryMSVCBuild.ps1 -build_type release -arch x86_64 -build_strawberry $true
 ```
 
 Strawberry and Windows installer executables are generated in:

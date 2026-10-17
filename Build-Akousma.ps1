@@ -941,7 +941,7 @@ function Import-CIVersions {
   # Only variables that already exist in the versions file are overridden.
   [CmdletBinding()]
   param([Parameter(Mandatory=$true)][string]$file)
-  $alias = @{ 'sqlite3' = 'sqlite'; 'fftw_mingw' = 'fftw'; 'gstreamer_plugins_rs' = 'gstreamer_gst_plugins_rs'; 'pe_parse' = 'peparse' }
+  $alias = @{ 'sqlite3' = 'sqlite'; 'gstreamer_plugins_rs' = 'gstreamer_gst_plugins_rs'; 'pe_parse' = 'peparse' }
   $text = if ($file -match '^https?://') { (Invoke-WebRequest -Uri $file -UseBasicParsing).Content } else { Get-Content -Raw -Path $file }
   foreach ($m in [regex]::Matches($text, "(?m)^\s+([a-z0-9_]+)_version:\s*'?([^'\s#]+)'?")) {
     $name = $m.Groups[1].Value.ToLower()
@@ -1006,6 +1006,8 @@ foreach ($k in $version_overrides.Keys) {
   Write-Host "  Override: $name = $($version_overrides[$k])" -ForegroundColor DarkCyan
   Set-Variable -Name $name -Value ([string]$version_overrides[$k]) -Scope Global
 }
+# Versions files from before upstream 2d9ce79 (e.g. -VersionsFile) call the MinGW-W64 FFTW package version FFTW_VERSION.
+if (-not $fftw_mingw_version -and $fftw_version) { $fftw_mingw_version = $fftw_version }
 
 $expat_version_underscore = $expat_version.Replace(".", "_")
 $libxml2_version_full = [version]$libxml2_version
@@ -1032,6 +1034,7 @@ switch ($arch_numeric_id) {
   0 { $vs_host_arch = "x86" }
   5 { $vs_host_arch = "arm64" }
   9 { $vs_host_arch = "amd64" }
+  12 { $vs_host_arch = "arm64" }
   default {
     Write-Error "Unsupported host architecture: $arch_numeric_id"
     exit 1
@@ -1461,7 +1464,8 @@ function GetPackageUrls {
     'speex' = "https://gitlab.xiph.org/xiph/speex/-/archive/Speex-$speex_version/speex-Speex-$speex_version.tar.gz"
     'mpg123' = "https://downloads.sourceforge.net/project/mpg123/mpg123/$mpg123_version/mpg123-$mpg123_version.tar.bz2"
     'lame' = "https://downloads.sourceforge.net/project/lame/lame/$lame_version/lame-$lame_version.tar.gz"
-    'fftw' = "https://github.com/strawberrymusicplayer/fftw3-mingw-cross/releases/download/${fftw_version}/fftw-${arch}-w64-mingw32-${build_type}-${fftw_version}.tar.xz"
+    'fftw-mingw' = "https://github.com/strawberrymusicplayer/fftw3-mingw-cross/releases/download/${fftw_mingw_version}/fftw-${arch}-w64-mingw32-${build_type}-${fftw_mingw_version}.tar.xz"
+    'fftw-source' = "https://www.fftw.org/fftw-$fftw_source_version.tar.gz"
     'musepack' = "https://files.musepack.net/source/musepack_src_r$musepack_version.tar.gz"
     'libopenmpt' = "https://lib.openmpt.org/files/libopenmpt/src/libopenmpt-$libopenmpt_version+release.msvc.zip"
     'libgme' = "https://github.com/libgme/game-music-emu/releases/download/$libgme_version/libgme-$libgme_version-src.tar.gz"
@@ -2048,7 +2052,10 @@ function Build-OpenSSL {
     try {
       $is_debug = $build_type -eq "debug"
       $build_flag = if ($is_debug) { "--debug" } else { "--release" }
-      & perl Configure $openssl_platform shared zlib no-capieng no-tests --prefix="$prefix_path" --libdir=lib --openssldir="$prefix_path/ssl" $build_flag --with-zlib-include="$prefix_path/include" --with-zlib-lib="$prefix_path/lib/z${lib_postfix}.lib" /FS
+      # VC-WIN64-ARM replaces the inherited ex_libs with onecore.lib, dropping the zlib library, so add it back with LDLIBS.
+      $ldlibs_args = @()
+      if ($arch -eq "arm64") { $ldlibs_args += "LDLIBS=onecore.lib $prefix_path/lib/z${lib_postfix}.lib" }
+      & perl Configure $openssl_platform shared zlib no-capieng no-tests --prefix="$prefix_path" --libdir=lib --openssldir="$prefix_path/ssl" $build_flag --with-zlib-include="$prefix_path/include" --with-zlib-lib="$prefix_path/lib/z${lib_postfix}.lib" @ldlibs_args /FS
       if ($LASTEXITCODE -ne 0) { throw "OpenSSL configure failed" }
       Invoke-NMake
       if ($LASTEXITCODE -ne 0) { throw "OpenSSL build failed" }
@@ -2267,7 +2274,10 @@ function Build-Pixman {
     ExtractPackage "pixman-$pixman_version.tar.gz" -ignore_errors $true
     Push-Location "pixman-$pixman_version"
     try {
-      MesonBuild -additional_args @("-Dgtk=disabled", "-Dlibpng=enabled")
+      $pixman_args = @("-Dgtk=disabled", "-Dlibpng=enabled")
+      # pixman enables MMX for any MSVC build, but the MMX intrinsics are x86 only.
+      if ($arch -eq "arm64") { $pixman_args += "-Dmmx=disabled" }
+      MesonBuild -additional_args $pixman_args
     }
     finally {
       Pop-Location
@@ -2783,6 +2793,7 @@ function Build-Opus {
     try {
       # Remove problematic line from CMakeLists.txt
       & sed -i '/include(opus_buildtype.cmake)/d' CMakeLists.txt
+      & patch -p1 -N -i "$patch_path/opus-cmake.patch"
       CMakeBuild
       Write-Host "opus built successfully!" -ForegroundColor Green
     }
@@ -2899,13 +2910,32 @@ function Build-FFTW3 {
   Write-Host "Building fftw3" -ForegroundColor Yellow
   Push-Location $build_path
   try {
+    # There is no MinGW-W64 binary package for arm64, so build it from source with CMake
+    if ($arch -eq "arm64") {
+      DownloadPackage -package_name "fftw-source"
+      ExtractPackage "fftw-$fftw_source_version.tar.gz"
+      Push-Location "fftw-$fftw_source_version"
+      try {
+        & patch -p1 -N -i "$patch_path/fftw-fixes.patch"
+        CMakeBuild -additional_args @(
+          "-DBUILD_TESTS=OFF",
+          "-DENABLE_THREADS=ON",
+          "-DWITH_COMBINED_THREADS=ON",
+          "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+        )
+      }
+      finally {
+        Pop-Location
+      }
+      return
+    }
     # It's recommended to build FFTW3 with MinGW-W64 so we use a binary package built on GitHub
-    DownloadPackage -package_name "fftw"
-    ExtractPackage "fftw-${arch}-w64-mingw32-${build_type}-${fftw_version}.tar.xz"
-    Push-Location "fftw-${arch}-w64-mingw32-${build_type}-${fftw_version}/lib"
+    DownloadPackage -package_name "fftw-mingw"
+    ExtractPackage "fftw-${arch}-w64-mingw32-${build_type}-${fftw_mingw_version}.tar.xz"
+    Push-Location "fftw-${arch}-w64-mingw32-${build_type}-${fftw_mingw_version}/lib"
     try {
       # Generate .lib file from .def
-      if ((-not (Test-Path "fftw3.def")) && Test-Path "libfftw3-3.def") {
+      if ((-not (Test-Path "fftw3.def")) -and (Test-Path "libfftw3-3.def")) {
         Copy-Item "libfftw3-3.def" "fftw3.def" -Force
       }
       & lib /machine:$lib_machine /def:fftw3.def
@@ -2914,7 +2944,7 @@ function Build-FFTW3 {
     finally {
       Pop-Location
     }
-    RecursiveCopy "fftw-${arch}-w64-mingw32-${build_type}-${fftw_version}" "$prefix_path"
+    RecursiveCopy "fftw-${arch}-w64-mingw32-${build_type}-${fftw_mingw_version}" "$prefix_path"
     & sed -i "s,^prefix=.*,prefix=${prefix_path},g" "$prefix_path/lib/pkgconfig/fftw3.pc"
     & sed -i "s,^exec_prefix=.*,exec_prefix=${prefix_path},g" "$prefix_path/lib/pkgconfig/fftw3.pc"
     & sed -i "s,^libdir=.*,libdir=${prefix_path}/lib,g" "$prefix_path/lib/pkgconfig/fftw3.pc"
