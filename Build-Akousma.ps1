@@ -273,8 +273,8 @@ $KnownPackages = @(
   'libsoup', 'glib-networking', 'freetype', 'harfbuzz', 'jasper', 'tiff', 'libwebp', 'ogg', 'vorbis', 'flac', 'wavpack', 'opus',
   'opusfile', 'speex', 'mpg123', 'lame', 'fftw3', 'musepack', 'libopenmpt', 'libgme', 'fdk-aac', 'faad2', 'faac', 'utfcpp', 'taglib',
   'libbs2b', 'libebur128', 'libcdio', 'ffmpeg', 'chromaprint', 'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
-  'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'abseil-cpp', 'protobuf', 'qtbase', 'qttools', 'qtimageformats', 'qtsvg', 'qtgrpc',
-  'kdsingleapplication', 'qtsparkle', 'sparsehash', 'glew', 'libprojectm', 'tinysvcmdns', 'pe-parse', 'pe-util'
+  'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'qtbase', 'qttools', 'qtimageformats', 'qtsvg', 'kdsingleapplication',
+  'qtsparkle', 'sparsehash', 'pe-parse', 'pe-util'
 )
 function Get-NaturalSortKey([string]$s) {
   return [regex]::Replace($s.ToLowerInvariant(), '\d+', { param($m) $m.Value.PadLeft(12, '0') })
@@ -1493,16 +1493,11 @@ function GetPackageUrls {
     'gst-plugins-ugly' = "https://gstreamer.freedesktop.org/src/gst-plugins-ugly/gst-plugins-ugly-$gstreamer_version.tar.xz"
     'gst-libav' = "https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-$gstreamer_version.tar.xz"
     'sparsehash' = "https://github.com/sparsehash/sparsehash/archive/refs/tags/sparsehash-$sparsehash_version.tar.gz"
-    'abseil-cpp' = "https://github.com/abseil/abseil-cpp/archive/refs/tags/$abseil_version/abseil-cpp-$abseil_version.tar.gz"
-    'protobuf' = "https://github.com/protocolbuffers/protobuf/releases/download/v$protobuf_version/protobuf-$protobuf_version.tar.gz"
     'qtbase' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtbase-everywhere-src-$qt_version.tar.xz"
     'qttools' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qttools-everywhere-src-$qt_version.tar.xz"
     'qtimageformats' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtimageformats-everywhere-src-$qt_version.tar.xz"
     'qtsvg' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtsvg-everywhere-src-$qt_version.tar.xz"
-    'qtgrpc' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtgrpc-everywhere-src-$qt_version.tar.xz"
     'kdsingleapplication' = "https://github.com/KDAB/KDSingleApplication/releases/download/v$kdsingleapplication_version/kdsingleapplication-$kdsingleapplication_version.tar.gz"
-    'glew' = "https://downloads.sourceforge.net/project/glew/glew/$glew_version/glew-$glew_version.tgz"
-    'libprojectm' = "https://github.com/projectM-visualizer/projectm/releases/download/v$libprojectm_version/libprojectm-$libprojectm_version.tar.gz"
     'pe-parse' = "https://github.com/trailofbits/pe-parse/archive/refs/tags/v$peparse_version/pe-parse-$peparse_version.tar.gz"
     'vc-redist-x86' = "https://aka.ms/vc14/vc_redist.x86.exe"
     'vc-redist-x64' = "https://aka.ms/vc14/vc_redist.x64.exe"
@@ -1521,7 +1516,6 @@ function GetGitRepoUrls {
     'ffmpeg' = "https://gitlab.freedesktop.org/gstreamer/meson-ports/ffmpeg"
     'gstreamer' = "https://gitlab.freedesktop.org/gstreamer/gstreamer"
     'gst-plugins-rs' = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
-    'tinysvcmdns' = "https://github.com/Pro/tinysvcmdns"
     'yasm' = "https://github.com/yasm/yasm"
     'pe-util' = "https://github.com/gsauthof/pe-util"
     'akousma' = $akousma_repo
@@ -3601,53 +3595,6 @@ function Build-SparseHash {
   }
 }
 
-function Build-AbseilCpp {
-  Write-Host "Building abseil-cpp" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    DownloadPackage -package_name "abseil-cpp"
-    ExtractPackage "abseil-cpp-$abseil_version.tar.gz"
-    Push-Location "abseil-cpp-$abseil_version"
-    try {
-      CMakeBuild -additional_args @(
-          "-DCMAKE_CXX_STANDARD=17",
-          "-DCMAKE_CXX_STANDARD_REQUIRED=ON",
-          "-DABSL_INTERNAL_AT_LEAST_CXX17=ON",
-          "-DABSL_BUILD_TESTING=OFF",
-          "-DABSL_USE_EXTERNAL_GOOGLETEST=OFF"
-        )
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
-function Build-Protobuf {
-  Write-Host "Building protobuf" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    DownloadPackage -package_name "protobuf"
-    ExtractPackage "protobuf-$protobuf_version.tar.gz"
-    Push-Location "protobuf-$protobuf_version"
-    try {
-      CMakeBuild -additional_args @(
-          "-Dprotobuf_BUILD_TESTS=OFF",
-          "-Dprotobuf_ABSL_PROVIDER=package"
-        )
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
 function Build-QtBase {
   Write-Host "Building qtbase" -ForegroundColor Yellow
   Push-Location $build_path
@@ -3792,36 +3739,6 @@ function Build-QtSvg {
   }
 }
 
-function Build-QtGrpc {
-  Write-Host "Building qtgrpc" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    if ($qt_dev -eq "ON") {
-      if (-not (Test-Path "qtgrpc")) {
-        RecursiveCopy "$src_path/qtgrpc" "qtgrpc"
-      }
-      Push-Location "qtgrpc"
-    }
-    else {
-      DownloadPackage -package_name "qtgrpc"
-      ExtractPackage "qtgrpc-everywhere-src-$qt_version.tar.xz"
-      Push-Location "qtgrpc-everywhere-src-$qt_version"
-    }
-    try {
-      CMakeBuild -additional_args @(
-          "-DQT_BUILD_EXAMPLES=OFF",
-          "-DQT_BUILD_TESTS=OFF"
-        )
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
 function Build-QtSparkle {
   Write-Host "Building qtsparkle" -ForegroundColor Yellow
   Push-Location $build_path
@@ -3854,71 +3771,6 @@ function Build-KDSingleApplication {
     Push-Location "kdsingleapplication-$kdsingleapplication_version"
     try {
       CMakeBuild -additional_args @("-DKDSingleApplication_QT6=ON")
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
-function Build-Glew {
-  Write-Host "Building glew" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    DownloadPackage -package_name "glew"
-    ExtractPackage "glew-$glew_version.tgz"
-    Push-Location "glew-$glew_version"
-    try {
-      CMakeBuild -source_path "build/cmake" -additional_args @("-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
-function Build-LibProjectm {
-  Write-Host "Building libprojectm" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    DownloadPackage -package_name "libprojectm"
-    ExtractPackage "libprojectm-$libprojectm_version.tar.gz"
-    Push-Location "libprojectm-$libprojectm_version"
-    try {
-      CMakeBuild
-    }
-    finally {
-      Pop-Location
-    }
-  }
-  finally {
-    Pop-Location
-  }
-}
-
-function Build-TinySvcmdns {
-  Write-Host "Building tinysvcmdns" -ForegroundColor Yellow
-  Push-Location $build_path
-  try {
-    CloneGitRepo -git_repo_name "tinysvcmdns"
-    if (-not (Test-Path "tinysvcmdns")) {
-      RecursiveCopy "$src_path/tinysvcmdns" "tinysvcmdns"
-    }
-    Push-Location "tinysvcmdns"
-    try {
-      CMakeBuild -additional_args @("-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
-      Copy-Item "*.lib" "$prefix_path/lib/" -Force
-      Copy-Item "*.dll" "$prefix_path/bin/" -Force
-      Copy-Item "*.exe" "$prefix_path/bin/" -Force
-      Copy-Item "*.h" "$prefix_path/include/" -Force
-      Copy-Item "../*.h" "$prefix_path/include/" -Force
-      CreatePkgConfigFile -prefix $prefix_path -name "tinysvcmdns" -description "tinysvcmdns" -version "0.1" -cflags "-I`${includedir}" -libs "-L`${libdir} -ltinysvcmdns" -output_file "$prefix_path/lib/pkgconfig/tinysvcmdns.pc"
     }
     finally {
       Pop-Location
@@ -4184,19 +4036,13 @@ function Get-PackageDependencies {
     "gst-plugins-ugly"    = @("pkgconf", "gst-plugins-base", "libcdio")
     "gst-libav"           = @("pkgconf", "gst-plugins-base", "ffmpeg")
     "gst-plugins-rs"      = @("pkgconf", "gst-plugins-base", "gst-plugins-bad", "glib", "openssl", "zlib")
-    "abseil-cpp"          = @("pkgconf")
-    "protobuf"            = @("pkgconf", "abseil-cpp", "zlib")
     "qtbase"              = @("pkgconf") + $qt
     "qttools"             = @("qtbase")
     "qtimageformats"      = @("qtbase", "jasper", "tiff", "libwebp")
     "qtsvg"               = @("qtbase")
-    "qtgrpc"              = @("qtbase", "protobuf", "abseil-cpp")
     "kdsingleapplication" = @("qtbase")
     "qtsparkle"           = @("qtbase", "qttools")
     "sparsehash"          = @("pkgconf")
-    "glew"                = @("pkgconf")
-    "libprojectm"         = @("pkgconf", "glew")
-    "tinysvcmdns"         = @("pkgconf")
     "pe-parse"            = @("pkgconf")
     "pe-util"             = @("pkgconf", "pe-parse", "boost")
   }
@@ -4210,8 +4056,7 @@ function Get-PackageWeight {
   $w = @{
     'qtbase' = 14; 'ffmpeg' = 9; 'gst-plugins-rs' = 7; 'akousma' = 7; 'gst-plugins-bad' = 6
     'icu4c' = 5; 'qttools' = 4; 'boost' = 4; 'glib' = 4; 'openssl' = 4
-    'qtgrpc' = 3; 'gst-plugins-good' = 3; 'gst-plugins-base' = 3; 'gstreamer' = 3; 'gst-libav' = 3
-    'protobuf' = 3; 'abseil-cpp' = 3; 'libprojectm' = 3
+    'gst-plugins-good' = 3; 'gst-plugins-base' = 3; 'gstreamer' = 3; 'gst-libav' = 3
     'harfbuzz' = 2; 'libxml2' = 2; 'libopenmpt' = 2; 'qtimageformats' = 2; 'taglib' = 2
     'freetype' = 2; 'pcre2' = 2; 'akousma-setup' = 2
   }
@@ -4492,19 +4337,13 @@ function Get-PackageMarkers {
     "gst-plugins-ugly"    = "$prefix_path/lib/gstreamer-1.0/gstasf.dll"
     "gst-libav"           = "$prefix_path/lib/gstreamer-1.0/gstlibav.dll"
     "gst-plugins-rs"      = "$prefix_path/lib/gstreamer-1.0/gstspotify.dll"
-    "abseil-cpp"          = "$prefix_path/lib/pkgconfig/absl_any.pc"
-    "protobuf"            = "$prefix_path/lib/pkgconfig/protobuf.pc"
     "qtbase"              = "$prefix_path/bin/qt-configure-module.bat"
     "qttools"             = "$prefix_path/bin/lconvert.exe"
     "qtimageformats"      = "$prefix_path/plugins/imageformats/qwebp${lib_postfix}.dll"
     "qtsvg"               = "$prefix_path/plugins/iconengines/qsvgicon${lib_postfix}.dll"
-    "qtgrpc"              = "$prefix_path/lib/cmake/Qt6Protobuf/Qt6ProtobufConfig.cmake"
     "kdsingleapplication" = "$prefix_path/lib/cmake/KDSingleApplication-qt6/KDSingleApplication-qt6Config.cmake"
     "qtsparkle"           = "$prefix_path/lib/cmake/qtsparkle-qt6/qtsparkle-qt6Config.cmake"
     "sparsehash"          = "$prefix_path/lib/pkgconfig/libsparsehash.pc"
-    "glew"                = "$prefix_path/lib/cmake/glew/glew-config.cmake"
-    "libprojectm"         = "$prefix_path/lib/cmake/projectM4/projectM4Config.cmake"
-    "tinysvcmdns"         = "$prefix_path/lib/pkgconfig/tinysvcmdns.pc"
     "pe-parse"            = "$prefix_path/lib/cmake/pe-parse/pe-parse-config.cmake"
     "pe-util"             = "$prefix_path/bin/peldd.exe"
     "akousma"             = "$build_path/akousma/build/akousma.exe"
@@ -5215,19 +5054,13 @@ try {
       "gst-plugins-ugly" { Build-GstPluginsUgly }
       "gst-libav" { Build-GstLibAv }
       "gst-plugins-rs" { Build-GstPluginsRs }
-      "abseil-cpp" { Build-AbseilCpp }
-      "protobuf" { Build-Protobuf }
       "qtbase" { Build-QtBase }
       "qttools" { Build-QtTools }
       "qtimageformats" { Build-QtImageFormats }
       "qtsvg" { Build-QtSvg }
-      "qtgrpc" { Build-QtGrpc }
       "kdsingleapplication" { Build-KDSingleApplication }
       "qtsparkle" { Build-QtSparkle }
       "sparsehash" { Build-SparseHash }
-      "glew" { Build-Glew }
-      "libprojectm" { Build-LibProjectm }
-      "tinysvcmdns" { Build-TinySvcmdns }
       "pe-parse" { Build-PeParse }
       "pe-util" { Build-PeUtil }
       "akousma" { Build-Akousma }
