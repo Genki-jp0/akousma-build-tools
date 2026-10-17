@@ -83,8 +83,8 @@ Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
   -NoPlaylistLock         the playlist lock is a commit in Akousma. It can be switched off in the app: Settings >
                           Behavior > Playlist > "Enable playlist locking (show lock button)".
   -MsvcToolsRef           this repository is the build tools; to move to a newer upstream: git fetch upstream;
-                          git merge upstream/master, fix conflicts in Build-Akousma.ps1, and update $GlibNetworkingRef
-                          if patches\glib-networking.patch changed.
+                          git merge upstream/master and fix conflicts in Build-Akousma.ps1. glib-networking follows
+                          GLIB_NETWORKING_VERSION in StrawberryPackageVersions.txt, which upstream moves with its patch.
   -strawberry_ref, $env:SMB_STRAWBERRY_PATCH, $env:SMB_GST_GOOD_PATCH, $env:STRAWBERRY_ROOT
                           upstream / old wrapper hand-over variables, no longer read. The work root is passed to the
                           parallel build processes as $env:AKOUSMA_WORK_ROOT.
@@ -207,5 +207,6 @@ arguments changed.
 
 glib-networking
 ---------------
-glib-networking is pinned to the commit the build tools' patches\glib-networking.patch was made for (2616c9e for
-upstream 4c8c65c, the commit this repository is based on). -GitRefs @{ 'glib-networking' = '<commit>' } wins.
+glib-networking is pinned to GLIB_NETWORKING_VERSION in StrawberryPackageVersions.txt: the commit upstream builds with
+the build tools' patches\glib-networking.patch (since upstream b1b8e82; a versions file without a commit there gets
+2616c9e, the commit the patch was made for at upstream 4c8c65c). -GitRefs @{ 'glib-networking' = '<commit>' } wins.

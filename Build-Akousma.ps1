@@ -382,7 +382,7 @@ foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', '
 
 # ---------------------------------------------------------------------
 # The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ 4c8c65c with the Akousma changes.
-# GlibNetworkingRef: the glib-networking commit this repository's patches\glib-networking.patch was written against (see below).
+# GlibNetworkingRef: the glib-networking commit for a versions file that doesn't pin one (see below).
 # ---------------------------------------------------------------------
 $MsvcToolsBase     = "4c8c65c6b1b2c7f2fb0fa6fc04151962d9ed0145"   # upstream 2026-10-04 'Update dependencies'
 $GlibNetworkingRef = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
@@ -681,20 +681,26 @@ if ($List)                   { $buildArgs.List             = $true }
 if ($VersionsFile)           { $buildArgs.VersionsFile     = $VersionsFile }
 if ($CiVersionsFile)         { $buildArgs.CiVersionsFile   = $CiVersionsFile }
 if ($VersionOverrides.Count) { $buildArgs.VersionOverrides = $VersionOverrides }
-# glib-networking is cloned from git (upstream's script builds master, unpinned) and patched with the build tools'
-# patches\glib-networking.patch (OpenSSL threading fixes), which upstream regenerates whenever glib-networking master moves.
-# So the right commit depends on the build tools commit: pin the commit this repository's patch was written against
-# ($GlibNetworkingRef above; the patch's 'index' blob hashes match it, and it applies with no offset or fuzz). For upstream
-# 4c8c65c (and 1dfe51d) that is 2616c9e; 34e85f6 needed e23c430 (2.90.alpha). When you merge a newer upstream commit that
-# changes patches\glib-networking.patch, update $GlibNetworkingRef to match.
+# glib-networking is cloned from git and patched with the build tools' patches\glib-networking.patch (OpenSSL threading
+# fixes), so the right commit depends on the build tools commit. Since upstream b1b8e82 the versions file pins it
+# (GLIB_NETWORKING_VERSION=<commit>, which upstream moves along with the patch), and that is the commit built here. A versions
+# file without a commit there (an older one, e.g. -VersionsFile) gets $GlibNetworkingRef above: the commit the patch was
+# written against up to upstream 4c8c65c (for 34e85f6 it was e23c430, 2.90.alpha).
 # The pin wins over a 40-char glib_networking_version in the CI build.yaml: that one goes with the patch CI had at the time,
 # which may not be this repository's. -GitRefs @{ 'glib-networking' = '<commit>' } overrides all of this.
+$pinVersionsFile = if ($VersionsFile) { $VersionsFile } else { Join-Path $PSScriptRoot "StrawberryPackageVersions.txt" }
+$GlibNetworkingRefSource = "the base of glib-networking.patch at $MsvcToolsRef"
+if ((Test-Path -LiteralPath $pinVersionsFile) -and
+  ((Get-Content -Raw -LiteralPath $pinVersionsFile) -match "(?m)^\s*GLIB_NETWORKING_VERSION\s*=\s*([0-9a-f]{40})\s*$")) {
+  $GlibNetworkingRef = $Matches[1]
+  $GlibNetworkingRefSource = "GLIB_NETWORKING_VERSION in $(Split-Path -Leaf $pinVersionsFile)"
+}
 $ciGlibNet = if ($CiVersionsFile -and (Test-Path -LiteralPath $CiVersionsFile) -and
   ((Get-Content -Raw -LiteralPath $CiVersionsFile) -match "(?m)^\s+glib_networking_version:\s*'?([0-9a-f]{40})\b")) { $Matches[1] } else { "" }
 if (-not $GitRefs.ContainsKey('glib-networking')) {
   $GitRefs['glib-networking'] = $GlibNetworkingRef
   if ($ciGlibNet -and $ciGlibNet -ne $GlibNetworkingRef) {
-    Write-Host "glib-networking: using $($GlibNetworkingRef.Substring(0, 7)) (the base of glib-networking.patch at $MsvcToolsRef), not CI's $($ciGlibNet.Substring(0, 7))." -ForegroundColor Cyan
+    Write-Host "glib-networking: using $($GlibNetworkingRef.Substring(0, 7)) ($GlibNetworkingRefSource), not CI's $($ciGlibNet.Substring(0, 7))." -ForegroundColor Cyan
   }
 }
 $buildArgs.GitRefs = $GitRefs
@@ -1008,6 +1014,8 @@ foreach ($k in $version_overrides.Keys) {
 }
 # Versions files from before upstream 2d9ce79 (e.g. -VersionsFile) call the MinGW-W64 FFTW package version FFTW_VERSION.
 if (-not $fftw_mingw_version -and $fftw_version) { $fftw_mingw_version = $fftw_version }
+# SQLITE_YEAR (the sqlite.org download folder) is new in upstream b1b8e82; older versions files had 2026 in the URL.
+if (-not $sqlite_year) { $sqlite_year = "2026" }
 
 $expat_version_underscore = $expat_version.Replace(".", "_")
 $libxml2_version_full = [version]$libxml2_version
@@ -1445,7 +1453,7 @@ function GetPackageUrls {
     'dlfcn-win32' = "https://github.com/dlfcn-win32/dlfcn-win32/archive/refs/tags/v$dlfcn_version/dlfcn-win32-$dlfcn_version.tar.gz"
     'libpsl' = "https://github.com/rockdaboot/libpsl/releases/download/$libpsl_version/libpsl-$libpsl_version.tar.gz"
     'orc' = "https://gstreamer.freedesktop.org/src/orc/orc-$orc_version.tar.xz"
-    'sqlite' = "https://sqlite.org/2026/sqlite-autoconf-$sqlite_version.tar.gz"
+    'sqlite' = "https://sqlite.org/$sqlite_year/sqlite-autoconf-$sqlite_version.tar.gz"
     'libproxy' = "https://github.com/libproxy/libproxy/archive/refs/tags/$libproxy_version/libproxy-$libproxy_version.tar.gz"
     'glib' = "https://download.gnome.org/sources/glib/$glib_version_short/glib-$glib_version.tar.xz"
     'libsoup' = "https://download.gnome.org/sources/libsoup/$libsoup_version_short/libsoup-$libsoup_version.tar.xz"
@@ -2526,9 +2534,6 @@ function Build-GlibNetworking {
   Write-Host "Building glib-networking" -ForegroundColor Yellow
   Push-Location $build_path
   try {
-    #DownloadPackage -package_name "glib-networking"
-    #ExtractPackage "glib-networking-$glib_networking_version.tar.xz"
-    #Set-Location "glib-networking-$glib_networking_version"
     CloneGitRepo -git_repo_name "glib-networking"
     RecursiveCopy "$src_path/glib-networking" "glib-networking"
     Push-Location "glib-networking"
