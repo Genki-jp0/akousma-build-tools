@@ -1,0 +1,511 @@
+diff --git a/src/constants/appearancesettings.h b/src/constants/appearancesettings.h
+index 80ea6c37f..3132e642b 100644
+--- a/src/constants/appearancesettings.h
++++ b/src/constants/appearancesettings.h
+@@ -62,6 +62,37 @@ constexpr char kTabBarSystemColor[] = "tab_system_color";
+ constexpr char kTabBarGradient[] = "tab_gradient";
+ constexpr char kTabBarColor[] = "tab_color";
+ 
++// Background of the sidebar tabbar: the strawberry graphics over the color, only the color or gradient, a custom image or the album cover of the playing song.
++enum class TabBarBackground {
++  Strawberry = 0,
++  Gradient = 1,
++  CustomImage = 2,
++  AlbumCover = 3
++};
++
++enum class TabBarGradientDirection {
++  Horizontal = 0,
++  Vertical = 1,
++  Diagonal = 2
++};
++
++constexpr char kTabBarBackground[] = "tab_background";
++constexpr char kTabBarGradientCustomColors[] = "tab_gradient_custom_colors";
++constexpr char kTabBarGradientStartColor[] = "tab_gradient_start_color";
++constexpr char kTabBarGradientEndColor[] = "tab_gradient_end_color";
++constexpr char kTabBarGradientDirection[] = "tab_gradient_direction";
++constexpr char kTabBarImage[] = "tab_background_image";
++// The image options are the same as for the playlist background image, plus tiling and tinting.
++constexpr char kTabBarImagePosition[] = "tab_background_image_position";
++constexpr char kTabBarImageMaxSize[] = "tab_background_image_max_size";
++constexpr char kTabBarImageStretch[] = "tab_background_image_stretch";
++constexpr char kTabBarImageKeepAspectRatio[] = "tab_background_image_keep_aspect_ratio";
++constexpr char kTabBarImageDoNotCut[] = "tab_background_image_do_not_cut";
++constexpr char kTabBarImageTile[] = "tab_background_image_tile";
++constexpr char kTabBarImageBlurRadius[] = "tab_background_image_blur_radius";
++constexpr char kTabBarImageOpacity[] = "tab_background_image_opacity";
++constexpr char kTabBarImageTint[] = "tab_background_image_tint";
++
+ constexpr char kPlaylistPlayingSongColor[] = "playlist_playing_song_color";
+ 
+ constexpr char kBackgroundImageType[] = "background_image_type";
+@@ -87,6 +118,19 @@ constexpr bool kDefaultSystemIcons = false;
+ constexpr bool kDefaultUseCustomColorSet = false;
+ constexpr bool kDefaultTabBarSystemColor = false;
+ constexpr bool kDefaultTabBarGradient = true;
++constexpr TabBarBackground kDefaultTabBarBackground = TabBarBackground::Strawberry;
++constexpr bool kDefaultTabBarGradientCustomColors = false;
++constexpr TabBarGradientDirection kDefaultTabBarGradientDirection = TabBarGradientDirection::Horizontal;
++// By default the image fills the sidebar, keeping its aspect ratio and cutting the sides.
++constexpr int kDefaultTabBarImagePosition = 3;  // BackgroundImagePosition::Middle
++constexpr int kDefaultTabBarImageMaxSize = 0;
++constexpr bool kDefaultTabBarImageStretch = true;
++constexpr bool kDefaultTabBarImageKeepAspectRatio = true;
++constexpr bool kDefaultTabBarImageDoNotCut = false;
++constexpr bool kDefaultTabBarImageTile = false;
++constexpr int kDefaultTabBarImageBlurRadius = 0;
++constexpr int kDefaultTabBarImageOpacity = 100;
++constexpr bool kDefaultTabBarImageTint = false;
+ 
+ constexpr BackgroundImageType kDefaultBackgroundImageType = BackgroundImageType::Default;
+ constexpr BackgroundImagePosition kDefaultBackgroundImagePosition = BackgroundImagePosition::BottomRight;
+diff --git a/src/settings/appearancesettingspage.cpp b/src/settings/appearancesettingspage.cpp
+index 48726c7f8..85fbf91c8 100644
+--- a/src/settings/appearancesettingspage.cpp
++++ b/src/settings/appearancesettingspage.cpp
+@@ -100,6 +100,19 @@ AppearanceSettingsPage::AppearanceSettingsPage(SettingsDialog *dialog, SharedPtr
+ 
+   QObject::connect(ui_->select_tabbar_color, &QPushButton::pressed, this, &AppearanceSettingsPage::TabBarSelectBGColor);
+   QObject::connect(ui_->tabbar_system_color, &QRadioButton::toggled, this, &AppearanceSettingsPage::TabBarSystemColor);
++  QObject::connect(ui_->tabbar_background_strawberry, &QRadioButton::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_gradient, &QRadioButton::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_album, &QRadioButton::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_custom, &QRadioButton::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_gradient_custom_colors, &QCheckBox::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_image_stretch, &QCheckBox::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_image_keep_aspect_ratio, &QCheckBox::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_image_tile, &QCheckBox::toggled, this, &AppearanceSettingsPage::TabBarBackgroundChanged);
++  QObject::connect(ui_->tabbar_background_image_blur, &QSlider::valueChanged, this, [this](const int value) { ui_->tabbar_background_image_blur_radius->setText(QStringLiteral("%1px").arg(value)); });
++  QObject::connect(ui_->tabbar_background_image_opacity, &QSlider::valueChanged, this, [this](const int value) { ui_->tabbar_background_image_opacity_level->setText(QStringLiteral("%1%").arg(value)); });
++  QObject::connect(ui_->select_tabbar_gradient_start_color, &QPushButton::pressed, this, [this]() { TabBarSelectGradientColor(true); });
++  QObject::connect(ui_->select_tabbar_gradient_end_color, &QPushButton::pressed, this, [this]() { TabBarSelectGradientColor(false); });
++  QObject::connect(ui_->select_tabbar_background_image, &QPushButton::pressed, this, &AppearanceSettingsPage::TabBarSelectBackgroundImage);
+ 
+   QObject::connect(ui_->select_playlist_playing_song_color, &QPushButton::pressed, this, &AppearanceSettingsPage::PlaylistPlayingSongSelectColor);
+   QObject::connect(ui_->playlist_playing_song_color_system, &QRadioButton::toggled, this, &AppearanceSettingsPage::PlaylistPlayingSongColorSystem);
+@@ -185,6 +198,43 @@ void AppearanceSettingsPage::Load() {
+   UpdateColorSelectorColor(ui_->select_tabbar_color, current_tabbar_bg_color_);
+   TabBarSystemColor(ui_->tabbar_system_color->isChecked());
+ 
++  // Tabbar background
++  switch (static_cast<TabBarBackground>(s.value(kTabBarBackground, static_cast<int>(kDefaultTabBarBackground)).toInt())) {
++    case TabBarBackground::Gradient:
++      ui_->tabbar_background_gradient->setChecked(true);
++      break;
++    case TabBarBackground::CustomImage:
++      ui_->tabbar_background_custom->setChecked(true);
++      break;
++    case TabBarBackground::AlbumCover:
++      ui_->tabbar_background_album->setChecked(true);
++      break;
++    case TabBarBackground::Strawberry:
++    default:
++      ui_->tabbar_background_strawberry->setChecked(true);
++      break;
++  }
++  ui_->tabbar_gradient_custom_colors->setChecked(s.value(kTabBarGradientCustomColors, kDefaultTabBarGradientCustomColors).toBool());
++  current_tabbar_gradient_start_color_ = s.value(kTabBarGradientStartColor, current_tabbar_bg_color_.lighter(117)).value<QColor>();
++  current_tabbar_gradient_end_color_ = s.value(kTabBarGradientEndColor, StyleHelper::shadowColor(false).darker(109)).value<QColor>();
++  UpdateColorSelectorColor(ui_->select_tabbar_gradient_start_color, current_tabbar_gradient_start_color_);
++  UpdateColorSelectorColor(ui_->select_tabbar_gradient_end_color, current_tabbar_gradient_end_color_);
++  ui_->tabbar_gradient_direction->setCurrentIndex(qBound(0, s.value(kTabBarGradientDirection, static_cast<int>(kDefaultTabBarGradientDirection)).toInt(), ui_->tabbar_gradient_direction->count() - 1));
++  ui_->tabbar_background_image->setText(s.value(kTabBarImage).toString());
++  // The positions are BackgroundImagePosition, from 1.
++  ui_->tabbar_background_image_position->setCurrentIndex(qBound(0, s.value(kTabBarImagePosition, kDefaultTabBarImagePosition).toInt() - 1, ui_->tabbar_background_image_position->count() - 1));
++  ui_->tabbar_background_image_maxsize->setValue(s.value(kTabBarImageMaxSize, kDefaultTabBarImageMaxSize).toInt());
++  ui_->tabbar_background_image_stretch->setChecked(s.value(kTabBarImageStretch, kDefaultTabBarImageStretch).toBool());
++  ui_->tabbar_background_image_keep_aspect_ratio->setChecked(s.value(kTabBarImageKeepAspectRatio, kDefaultTabBarImageKeepAspectRatio).toBool());
++  ui_->tabbar_background_image_do_not_cut->setChecked(s.value(kTabBarImageDoNotCut, kDefaultTabBarImageDoNotCut).toBool());
++  ui_->tabbar_background_image_tile->setChecked(s.value(kTabBarImageTile, kDefaultTabBarImageTile).toBool());
++  ui_->tabbar_background_image_blur->setValue(s.value(kTabBarImageBlurRadius, kDefaultTabBarImageBlurRadius).toInt());
++  ui_->tabbar_background_image_blur_radius->setText(QStringLiteral("%1px").arg(ui_->tabbar_background_image_blur->value()));
++  ui_->tabbar_background_image_opacity->setValue(s.value(kTabBarImageOpacity, kDefaultTabBarImageOpacity).toInt());
++  ui_->tabbar_background_image_opacity_level->setText(QStringLiteral("%1%").arg(ui_->tabbar_background_image_opacity->value()));
++  ui_->tabbar_background_image_tint->setChecked(s.value(kTabBarImageTint, kDefaultTabBarImageTint).toBool());
++  TabBarBackgroundChanged();
++
+   // Currently playing song color
+   current_playlist_playing_song_color_ = s.value(kPlaylistPlayingSongColor).value<QColor>();
+   if (current_playlist_playing_song_color_.isValid()) {
+@@ -308,6 +358,27 @@ void AppearanceSettingsPage::Save() {
+   s.setValue(kTabBarGradient, ui_->tabbar_gradient->isChecked());
+   s.setValue(kTabBarColor, current_tabbar_bg_color_);
+ 
++  // Tabbar background
++  TabBarBackground tabbar_background = TabBarBackground::Strawberry;
++  if (ui_->tabbar_background_gradient->isChecked()) tabbar_background = TabBarBackground::Gradient;
++  else if (ui_->tabbar_background_custom->isChecked()) tabbar_background = TabBarBackground::CustomImage;
++  else if (ui_->tabbar_background_album->isChecked()) tabbar_background = TabBarBackground::AlbumCover;
++  s.setValue(kTabBarBackground, static_cast<int>(tabbar_background));
++  s.setValue(kTabBarGradientCustomColors, ui_->tabbar_gradient_custom_colors->isChecked());
++  s.setValue(kTabBarGradientStartColor, current_tabbar_gradient_start_color_);
++  s.setValue(kTabBarGradientEndColor, current_tabbar_gradient_end_color_);
++  s.setValue(kTabBarGradientDirection, ui_->tabbar_gradient_direction->currentIndex());
++  s.setValue(kTabBarImage, ui_->tabbar_background_image->text());
++  s.setValue(kTabBarImagePosition, ui_->tabbar_background_image_position->currentIndex() + 1);
++  s.setValue(kTabBarImageMaxSize, ui_->tabbar_background_image_maxsize->value());
++  s.setValue(kTabBarImageStretch, ui_->tabbar_background_image_stretch->isChecked());
++  s.setValue(kTabBarImageKeepAspectRatio, ui_->tabbar_background_image_keep_aspect_ratio->isChecked());
++  s.setValue(kTabBarImageDoNotCut, ui_->tabbar_background_image_do_not_cut->isChecked());
++  s.setValue(kTabBarImageTile, ui_->tabbar_background_image_tile->isChecked());
++  s.setValue(kTabBarImageBlurRadius, ui_->tabbar_background_image_blur->value());
++  s.setValue(kTabBarImageOpacity, ui_->tabbar_background_image_opacity->value());
++  s.setValue(kTabBarImageTint, ui_->tabbar_background_image_tint->isChecked());
++
+   // Currently playing song color
+   if (ui_->playlist_playing_song_color_system->isChecked()) {
+     s.setValue(kPlaylistPlayingSongColor, QColor());
+@@ -625,6 +696,47 @@ void AppearanceSettingsPage::TabBarSystemColor(const bool checked) {
+ 
+ }
+ 
++void AppearanceSettingsPage::TabBarBackgroundChanged() {
++
++  const bool custom_image = ui_->tabbar_background_custom->isChecked();
++  const bool image = custom_image || ui_->tabbar_background_album->isChecked();
++  ui_->select_tabbar_gradient_start_color->setEnabled(ui_->tabbar_gradient_custom_colors->isChecked());
++  ui_->select_tabbar_gradient_end_color->setEnabled(ui_->tabbar_gradient_custom_colors->isChecked());
++  ui_->tabbar_background_image->setEnabled(custom_image);
++  ui_->select_tabbar_background_image->setEnabled(custom_image);
++  // Same dependencies as the playlist background image options.
++  ui_->widget_tabbar_background_image_options->setEnabled(image);
++  const bool tile = ui_->tabbar_background_image_tile->isChecked();
++  ui_->tabbar_background_image_stretch->setEnabled(!tile);
++  ui_->tabbar_background_image_keep_aspect_ratio->setEnabled(!tile && ui_->tabbar_background_image_stretch->isChecked());
++  ui_->tabbar_background_image_do_not_cut->setEnabled(!tile && ui_->tabbar_background_image_stretch->isChecked() && ui_->tabbar_background_image_keep_aspect_ratio->isChecked());
++  ui_->tabbar_background_image_maxsize->setEnabled(!ui_->tabbar_background_image_stretch->isChecked() || tile);
++  ui_->tabbar_background_image_position->setEnabled(!tile);
++
++}
++
++void AppearanceSettingsPage::TabBarSelectGradientColor(const bool start) {
++
++  QColor &color = start ? current_tabbar_gradient_start_color_ : current_tabbar_gradient_end_color_;
++  const QColor color_selected = QColorDialog::getColor(color);
++  if (!color_selected.isValid()) return;
++  color = color_selected;
++  UpdateColorSelectorColor(start ? ui_->select_tabbar_gradient_start_color : ui_->select_tabbar_gradient_end_color, color);
++
++  set_changed();
++
++}
++
++void AppearanceSettingsPage::TabBarSelectBackgroundImage() {
++
++  const QString selected_filename = QFileDialog::getOpenFileName(this, tr("Select tabbar background image"), ui_->tabbar_background_image->text(), tr(kLoadImageFileFilter) + u";;"_s + tr(kAllFilesFilterSpec));
++  if (selected_filename.isEmpty()) return;
++  ui_->tabbar_background_image->setText(selected_filename);
++
++  set_changed();
++
++}
++
+ void AppearanceSettingsPage::TabBarSelectBGColor() {
+ 
+   if (ui_->tabbar_system_color->isChecked()) return;
+diff --git a/src/settings/appearancesettingspage.h b/src/settings/appearancesettingspage.h
+index 5cc575124..c8fda8154 100644
+--- a/src/settings/appearancesettingspage.h
++++ b/src/settings/appearancesettingspage.h
+@@ -65,6 +65,9 @@ class AppearanceSettingsPage : public SettingsPage {
+   void BackgroundImageOpacityLevelChanged(const int percent);
+   void TabBarSystemColor(const bool checked);
+   void TabBarSelectBGColor();
++  void TabBarBackgroundChanged();
++  void TabBarSelectGradientColor(const bool start);
++  void TabBarSelectBackgroundImage();
+   void PlaylistPlayingSongColorSystem(const bool checked);
+   void PlaylistPlayingSongSelectColor();
+ 
+@@ -100,6 +103,8 @@ class AppearanceSettingsPage : public SettingsPage {
+   QMap<QPalette::ColorRole, QPointer<QPushButton>> color_selectors_;
+   QColor current_tabbar_bg_color_;
+   QColor original_tabbar_bg_color_;
++  QColor current_tabbar_gradient_start_color_;
++  QColor current_tabbar_gradient_end_color_;
+   AppearanceSettings::BackgroundImageType background_image_type_;
+   QString background_image_filename_;
+   QString original_background_image_filename_;
+diff --git a/src/settings/appearancesettingspage.ui b/src/settings/appearancesettingspage.ui
+index 562c47dd2..cb322bc7d 100644
+--- a/src/settings/appearancesettingspage.ui
++++ b/src/settings/appearancesettingspage.ui
+@@ -193,6 +193,33 @@
+      </layout>
+     </widget>
+    </item>
++   <item>
++    <widget class="QGroupBox" name="groupbox_tabbar_background">
++     <property name="title">
++      <string>Tabbar background</string>
++     </property>
++     <layout class="QVBoxLayout" name="layout_tabbar_background">
++<item><widget class="QRadioButton" name="tabbar_background_strawberry"><property name="text"><string>Default background (strawberry graphics)</string></property></widget></item>
++<item><widget class="QRadioButton" name="tabbar_background_gradient"><property name="text"><string>Plain gradient, no graphics</string></property></widget></item>
++<item><widget class="QRadioButton" name="tabbar_background_album"><property name="toolTip"><string>The album cover of the currently playing song</string></property><property name="text"><string>Album cover</string></property></widget></item>
++<item><layout class="QHBoxLayout" name="layout_tabbar_background_custom"><item><widget class="QRadioButton" name="tabbar_background_custom"><property name="text"><string>Custom image:</string></property></widget></item><item><widget class="QLineEdit" name="tabbar_background_image"/></item><item><widget class="QPushButton" name="select_tabbar_background_image"><property name="text"><string>Browse...</string></property></widget></item></layout></item>
++<item><widget class="QWidget" name="widget_tabbar_gradient_options" native="true"><layout class="QHBoxLayout" name="layout_tabbar_gradient_options"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><item><widget class="QCheckBox" name="tabbar_gradient_custom_colors"><property name="text"><string>Custom gradient colors</string></property></widget></item><item><widget class="QPushButton" name="select_tabbar_gradient_start_color"><property name="text"><string notr="true"></string></property></widget></item><item><widget class="QPushButton" name="select_tabbar_gradient_end_color"><property name="text"><string notr="true"></string></property></widget></item><item><widget class="QLabel" name="label_tabbar_gradient_direction"><property name="text"><string>Direction</string></property></widget></item><item><widget class="QComboBox" name="tabbar_gradient_direction"><item><property name="text"><string>Horizontal</string></property></item><item><property name="text"><string>Vertical</string></property></item><item><property name="text"><string>Diagonal</string></property></item></widget></item><item><spacer name="spacer_tabbar_gradient_options"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item></layout></widget></item>
++<item><widget class="QWidget" name="widget_tabbar_background_image_options" native="true"><layout class="QVBoxLayout" name="layout_tabbar_background_image_options"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property>
++<item><widget class="QWidget" name="widget_tabbar_background_image_position" native="true"><layout class="QHBoxLayout" name="layout_tabbar_background_image_position"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><item><widget class="QLabel" name="label_tabbar_background_image_position"><property name="text"><string>Position</string></property></widget></item><item><widget class="QComboBox" name="tabbar_background_image_position"><item><property name="text"><string>Upper Left</string></property></item><item><property name="text"><string>Upper Right</string></property></item><item><property name="text"><string>Middle</string></property></item><item><property name="text"><string>Bottom Left</string></property></item><item><property name="text"><string>Bottom Right</string></property></item></widget></item><item><widget class="QLabel" name="label_tabbar_background_image_maxsize"><property name="text"><string>Max image size</string></property></widget></item><item><widget class="QSpinBox" name="tabbar_background_image_maxsize"><property name="minimum"><number>0</number></property><property name="maximum"><number>9000</number></property><property name="specialValueText"><string>No limit</string></property></widget></item><item><spacer name="spacer_tabbar_background_image_position"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item></layout></widget></item>
++<item><widget class="QWidget" name="widget_tabbar_background_image_stretch" native="true"><layout class="QHBoxLayout" name="layout_tabbar_background_image_stretch"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><item><widget class="QCheckBox" name="tabbar_background_image_stretch"><property name="text"><string>Stretch image to fill the tabbar</string></property></widget></item><item><widget class="QCheckBox" name="tabbar_background_image_keep_aspect_ratio"><property name="text"><string>Keep aspect ratio</string></property></widget></item><item><widget class="QCheckBox" name="tabbar_background_image_do_not_cut"><property name="text"><string>Do not cut image</string></property></widget></item><item><widget class="QCheckBox" name="tabbar_background_image_tile"><property name="text"><string>Tile image</string></property></widget></item><item><spacer name="spacer_tabbar_background_image_stretch"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item></layout></widget></item>
++<item><layout class="QGridLayout" name="layout_tabbar_background_image_blur_opacity">
++<item row="0" column="0"><widget class="QLabel" name="label_tabbar_background_image_blur"><property name="text"><string>Blur amount</string></property></widget></item>
++<item row="0" column="1"><widget class="QSlider" name="tabbar_background_image_blur"><property name="minimum"><number>0</number></property><property name="maximum"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="tickPosition"><enum>QSlider::TicksBelow</enum></property><property name="tickInterval"><number>10</number></property></widget></item>
++<item row="0" column="2"><widget class="QLabel" name="tabbar_background_image_blur_radius"><property name="text"><string>0px</string></property></widget></item>
++<item row="1" column="0"><widget class="QLabel" name="label_tabbar_background_image_opacity"><property name="text"><string>Opacity</string></property></widget></item>
++<item row="1" column="1"><widget class="QSlider" name="tabbar_background_image_opacity"><property name="minimum"><number>0</number></property><property name="maximum"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="tickPosition"><enum>QSlider::TicksBelow</enum></property><property name="tickInterval"><number>10</number></property></widget></item>
++<item row="1" column="2"><widget class="QLabel" name="tabbar_background_image_opacity_level"><property name="text"><string>100%</string></property></widget></item>
++</layout></item>
++<item><widget class="QCheckBox" name="tabbar_background_image_tint"><property name="text"><string>Tint the image with the tabbar color</string></property></widget></item>
++</layout></widget></item>
++     </layout>
++    </widget>
++   </item>
+    <item>
+     <widget class="QGroupBox" name="playlist_playing_song_color">
+      <property name="title">
+diff --git a/src/widgets/fancytabwidget.cpp b/src/widgets/fancytabwidget.cpp
+index 53f3387e8..40ba63a38 100644
+--- a/src/widgets/fancytabwidget.cpp
++++ b/src/widgets/fancytabwidget.cpp
+@@ -145,8 +145,26 @@ void FancyTabWidget::ReloadSettings() {
+   }
+   iconsize_smallsidebar_ = s.value(AppearanceSettings::kIconSizeTabbarSmallMode, IconSize_SmallSidebar).toInt();
+   iconsize_largesidebar_ = s.value(AppearanceSettings::kIconSizeTabbarLargeMode, IconSize_LargeSidebar).toInt();
++  bg_mode_ = s.value(AppearanceSettings::kTabBarBackground, static_cast<int>(AppearanceSettings::kDefaultTabBarBackground)).toInt();
++  bg_gradient_custom_colors_ = s.value(AppearanceSettings::kTabBarGradientCustomColors, AppearanceSettings::kDefaultTabBarGradientCustomColors).toBool();
++  bg_gradient_start_color_ = s.value(AppearanceSettings::kTabBarGradientStartColor, bg_color_.lighter(117)).value<QColor>();
++  bg_gradient_end_color_ = s.value(AppearanceSettings::kTabBarGradientEndColor, StyleHelper::shadowColor(false).darker(109)).value<QColor>();
++  bg_gradient_direction_ = s.value(AppearanceSettings::kTabBarGradientDirection, static_cast<int>(AppearanceSettings::kDefaultTabBarGradientDirection)).toInt();
++  bg_image_filename_ = s.value(AppearanceSettings::kTabBarImage).toString();
++  bg_image_position_ = s.value(AppearanceSettings::kTabBarImagePosition, AppearanceSettings::kDefaultTabBarImagePosition).toInt();
++  bg_image_max_size_ = s.value(AppearanceSettings::kTabBarImageMaxSize, AppearanceSettings::kDefaultTabBarImageMaxSize).toInt();
++  bg_image_stretch_ = s.value(AppearanceSettings::kTabBarImageStretch, AppearanceSettings::kDefaultTabBarImageStretch).toBool();
++  bg_image_keep_aspect_ratio_ = s.value(AppearanceSettings::kTabBarImageKeepAspectRatio, AppearanceSettings::kDefaultTabBarImageKeepAspectRatio).toBool();
++  bg_image_do_not_cut_ = s.value(AppearanceSettings::kTabBarImageDoNotCut, AppearanceSettings::kDefaultTabBarImageDoNotCut).toBool();
++  bg_image_tile_ = s.value(AppearanceSettings::kTabBarImageTile, AppearanceSettings::kDefaultTabBarImageTile).toBool();
++  bg_image_blur_radius_ = qBound(0, s.value(AppearanceSettings::kTabBarImageBlurRadius, AppearanceSettings::kDefaultTabBarImageBlurRadius).toInt(), 100);
++  bg_image_opacity_ = qBound(0, s.value(AppearanceSettings::kTabBarImageOpacity, AppearanceSettings::kDefaultTabBarImageOpacity).toInt(), 100);
++  bg_image_tint_ = s.value(AppearanceSettings::kTabBarImageTint, AppearanceSettings::kDefaultTabBarImageTint).toBool();
+   s.endGroup();
+ 
++  background_pixmap_ = bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::Strawberry) ? sprite_pixmap_ : QPixmap();
++  UpdateBackgroundImage();
++
+ #ifndef Q_OS_MACOS
+   if (mode() == Mode::LargeSidebar) {
+     setIconSize(QSize(iconsize_largesidebar_, iconsize_largesidebar_));
+@@ -267,9 +285,45 @@ void FancyTabWidget::AddBottomWidget(QWidget *widget_view) {
+   bottom_widget_ = widget_view;
+ }
+ 
++void FancyTabWidget::SetAlbumCoverImage(const QImage &image) {
++
++  bg_album_cover_ = image;
++  if (bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::AlbumCover)) {
++    UpdateBackgroundImage();
++    update();
++  }
++
++}
++
++// Loads the custom image or takes the album cover, and blurs it like the playlist background image, the opacity is applied when drawing.
++void FancyTabWidget::UpdateBackgroundImage() {
++
++  QImage image;
++  if (bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::CustomImage) && !bg_image_filename_.isEmpty()) {
++    image = QImage(bg_image_filename_);
++  }
++  else if (bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::AlbumCover)) {
++    image = bg_album_cover_;
++  }
++
++  if (!image.isNull() && bg_image_blur_radius_ > 0) {
++    QImage source = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
++    QImage blurred(source.size(), QImage::Format_ARGB32_Premultiplied);
++    blurred.fill(Qt::transparent);
++    QPainter blur_painter(&blurred);
++    qt_blurImage(&blur_painter, source, bg_image_blur_radius_, true, false);
++    blur_painter.end();
++    image = blurred;
++  }
++
++  bg_image_ = image.isNull() ? QPixmap() : QPixmap::fromImage(image);
++
++}
++
+ void FancyTabWidget::SetBackgroundPixmap(const QPixmap &pixmap) {
+ 
+-  background_pixmap_ = pixmap;
++  sprite_pixmap_ = pixmap;
++  background_pixmap_ = bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::Strawberry) ? sprite_pixmap_ : QPixmap();
+   update();
+ 
+ }
+@@ -317,6 +371,9 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+   backgroundRect.setWidth(tabBar()->width());
+ 
+   QString key = QString::asprintf("mh_vertical %d %d %d %d %d", backgroundRect.width(), backgroundRect.height(), bg_color_.rgb(), (bg_gradient_ ? 1 : 0), (background_pixmap_.isNull() ? 0 : 1));
++  key += QString::asprintf(" %d %d %u %u %d %lld %d %d %d %d %d %d %d %d", bg_mode_, (bg_gradient_custom_colors_ ? 1 : 0), bg_gradient_start_color_.rgba(), bg_gradient_end_color_.rgba(), bg_gradient_direction_, static_cast<long long>(bg_image_.cacheKey()), bg_image_position_, bg_image_max_size_, (bg_image_stretch_ ? 1 : 0), (bg_image_keep_aspect_ratio_ ? 1 : 0), (bg_image_do_not_cut_ ? 1 : 0), (bg_image_tile_ ? 1 : 0), bg_image_opacity_, (bg_image_tint_ ? 1 : 0));
++  // The plain gradient background is always a gradient.
++  const bool draw_gradient = bg_gradient_ || bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::Gradient);
+ 
+   QPixmap pixmap;
+   if (!QPixmapCache::find(key, &pixmap)) {
+@@ -326,14 +383,24 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+     p.fillRect(backgroundRect, bg_color_);
+ 
+     // Draw the gradient fill.
+-    if (bg_gradient_) {
++    if (draw_gradient) {
+ 
+       QRect rect(0, 0, backgroundRect.width(), backgroundRect.height());
+ 
+       QColor shadow = StyleHelper::shadowColor(false);
+       QLinearGradient grad(backgroundRect.topRight(), backgroundRect.topLeft());
+-      grad.setColorAt(0, bg_color_.lighter(117));
+-      grad.setColorAt(1, shadow.darker(109));
++      switch (static_cast<AppearanceSettings::TabBarGradientDirection>(bg_gradient_direction_)) {
++        case AppearanceSettings::TabBarGradientDirection::Horizontal:
++          break;
++        case AppearanceSettings::TabBarGradientDirection::Vertical:
++          grad = QLinearGradient(backgroundRect.topLeft(), backgroundRect.bottomLeft());
++          break;
++        case AppearanceSettings::TabBarGradientDirection::Diagonal:
++          grad = QLinearGradient(backgroundRect.topRight(), backgroundRect.bottomLeft());
++          break;
++      }
++      grad.setColorAt(0, bg_gradient_custom_colors_ ? bg_gradient_start_color_ : bg_color_.lighter(117));
++      grad.setColorAt(1, bg_gradient_custom_colors_ ? bg_gradient_end_color_ : shadow.darker(109));
+       p.fillRect(rect, grad);
+ 
+       QColor light(255, 255, 255, 80);
+@@ -363,6 +430,64 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+       }
+     }
+ 
++    // Draw the custom image or the album cover over the color or gradient, with the same options as the playlist background image.
++    if ((bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::CustomImage) || bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::AlbumCover)) && !bg_image_.isNull()) {
++      const QRect image_rect(0, 0, backgroundRect.width(), backgroundRect.height());
++      QPixmap image = bg_image_;
++      if (!bg_image_stretch_ && bg_image_max_size_ > 0 && (image.width() > bg_image_max_size_ || image.height() > bg_image_max_size_)) {
++        image = image.scaled(bg_image_max_size_, bg_image_max_size_, Qt::KeepAspectRatio, Qt::SmoothTransformation);
++      }
++      p.save();
++      p.setClipRect(image_rect);
++      p.setOpacity(static_cast<qreal>(bg_image_opacity_) / 100.0);
++      if (bg_image_tile_) {
++        p.drawTiledPixmap(image_rect, image);
++      }
++      else {
++        if (bg_image_stretch_) {
++          if (!bg_image_keep_aspect_ratio_) {
++            image = image.scaled(image_rect.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
++          }
++          else {
++            image = image.scaled(image_rect.size(), bg_image_do_not_cut_ ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
++          }
++        }
++        else if (image.width() > image_rect.width() || image.height() > image_rect.height()) {
++          image = image.scaled(image_rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
++        }
++        int x = 0;
++        int y = 0;
++        switch (static_cast<AppearanceSettings::BackgroundImagePosition>(bg_image_position_)) {
++          case AppearanceSettings::BackgroundImagePosition::UpperLeft:
++            break;
++          case AppearanceSettings::BackgroundImagePosition::UpperRight:
++            x = image_rect.width() - image.width();
++            break;
++          case AppearanceSettings::BackgroundImagePosition::BottomLeft:
++            y = image_rect.height() - image.height();
++            break;
++          case AppearanceSettings::BackgroundImagePosition::BottomRight:
++            x = image_rect.width() - image.width();
++            y = image_rect.height() - image.height();
++            break;
++          case AppearanceSettings::BackgroundImagePosition::Middle:
++          default:
++            x = (image_rect.width() - image.width()) / 2;
++            y = (image_rect.height() - image.height()) / 2;
++            break;
++        }
++        p.drawPixmap(x, y, image);
++      }
++      if (bg_image_tint_) {
++        // Tint the image with the tabbar color.
++        p.setOpacity(1.0);
++        QColor tint(bg_color_);
++        tint.setAlpha(110);
++        p.fillRect(image_rect, tint);
++      }
++      p.restore();
++    }
++
+     // Shadow effect of the background
+     QColor light(255, 255, 255, 80);
+     p.setPen(light);
+diff --git a/src/widgets/fancytabwidget.h b/src/widgets/fancytabwidget.h
+index 67f291e8c..98c17bc61 100644
+--- a/src/widgets/fancytabwidget.h
++++ b/src/widgets/fancytabwidget.h
+@@ -27,6 +27,7 @@
+ #include <QString>
+ #include <QIcon>
+ #include <QPixmap>
++#include <QImage>
+ #include <QColor>
+ 
+ class QMenu;
+@@ -74,6 +75,8 @@ class FancyTabWidget : public QTabWidget {
+   void AddSpacer();
+   void AddBottomWidget(QWidget *widget_view);
+   void SetBackgroundPixmap(const QPixmap &pixmap);
++  // The cover of the playing song, used for the album cover sidebar background.
++  void SetAlbumCoverImage(const QImage &image);
+   int IndexOfTab(QWidget *widget);
+ 
+   static QColor DefaultTabbarBgColor();
+@@ -108,6 +111,28 @@ class FancyTabWidget : public QTabWidget {
+   bool bg_color_system_;
+   bool bg_gradient_;
+   QColor bg_color_;
++
++  // Sidebar background, see AppearanceSettings::TabBarBackground. The strawberry graphics set with SetBackgroundPixmap() are only used for the default background.
++  QPixmap sprite_pixmap_;
++  int bg_mode_ = 0;
++  bool bg_gradient_custom_colors_ = false;
++  QColor bg_gradient_start_color_;
++  QColor bg_gradient_end_color_;
++  int bg_gradient_direction_ = 0;
++  QString bg_image_filename_;
++  QPixmap bg_image_;
++  QImage bg_album_cover_;
++  int bg_image_position_ = 3;
++  int bg_image_max_size_ = 0;
++  bool bg_image_stretch_ = true;
++  bool bg_image_keep_aspect_ratio_ = true;
++  bool bg_image_do_not_cut_ = false;
++  bool bg_image_tile_ = false;
++  int bg_image_blur_radius_ = 0;
++  int bg_image_opacity_ = 100;
++  bool bg_image_tint_ = false;
++
++  void UpdateBackgroundImage();
+   int iconsize_smallsidebar_;
+   int iconsize_largesidebar_;
+ };
+diff --git a/src/core/mainwindow.cpp b/src/core/mainwindow.cpp
+index bc3e99c4b..e70c755bc 100644
+--- a/src/core/mainwindow.cpp
++++ b/src/core/mainwindow.cpp
+@@ -508,6 +508,8 @@ MainWindow::MainWindow(Application *app,
+   // Add the playing widget to the fancy tab widget
+   ui_->tabs->AddBottomWidget(ui_->widget_playing);
+   ui_->tabs->SetBackgroundPixmap(QPixmap(u":/pictures/sidebar-background.png"_s));
++  // The album cover of the playing song for the album cover sidebar background.
++  QObject::connect(this, &MainWindow::AlbumCoverReady, ui_->tabs, [this](const Song&, const QImage &image) { ui_->tabs->SetAlbumCoverImage(image); });
+   ui_->tabs->LoadSettings(QLatin1String(MainWindowSettings::kSettingsGroup));
+ 
+   track_position_timer_->setInterval(kTrackPositionUpdateTimeMs);

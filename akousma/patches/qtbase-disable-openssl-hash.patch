@@ -1,0 +1,13 @@
+--- a/src/corelib/configure.cmake
++++ b/src/corelib/configure.cmake
+@@ -1340,6 +1340,10 @@
+ )
+ qt_feature("openssl-hash" PRIVATE
+     LABEL "OpenSSL based cryptographic hash"
++    # Strawberry MSVC build: off unless -DFEATURE_openssl_hash=ON. With it, every QCryptographicHash
++    # loads and unloads OpenSSL's "default" provider; the unload frees method-store entries that other
++    # threads may be iterating (OSSL_DECODER_do_all_provided), a use-after-free crash at startup.
++    AUTODETECT OFF
+     CONDITION QT_FEATURE_openssl_linked AND QT_FEATURE_opensslv30
+     PURPOSE "Uses OpenSSL based implementation of cryptographic hash algorithms."
+ )

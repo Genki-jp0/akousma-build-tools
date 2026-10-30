@@ -1,0 +1,1670 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cf6a8d119..69001b30d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1372,9 +1372,13 @@ if(WIN32)
+     src/engine/mmaudiodevicelister.cpp
+     src/engine/asioaudiodevicelister.cpp
+     src/core/windows7thumbbar.cpp
++    src/utilities/winbackdrop.cpp
++    src/core/mainwindowbackdrop.cpp
++    src/core/mainwindowbackdropstylesheet.cpp
+   )
+   list(APPEND HEADERS
+     src/core/windows7thumbbar.h
++    src/core/mainwindowbackdrop.h
+   )
+ endif()
+ 
+diff --git a/src/constants/appearancesettings.h b/src/constants/appearancesettings.h
+index 3132e642b..90bdec641 100644
+--- a/src/constants/appearancesettings.h
++++ b/src/constants/appearancesettings.h
+@@ -45,6 +45,18 @@ constexpr char kSystemThemeIcons[] = "system_icons";
+ constexpr char kDarkMode[] = "dark_mode";
+ constexpr char kUseCustomColorSet[] = "use-custom-color-set";
+ 
++// Windows only: system backdrop behind the main window (Settings > Appearance > Window backdrop).
++constexpr char kWindowBackdrop[] = "window_backdrop";
++// Also show the backdrop through the lists (playlist, collection, context...). Text there then loses ClearType.
++constexpr char kWindowBackdropTranslucentContent[] = "window_backdrop_translucent_content";
++
++enum class WindowBackdrop {
++  None = 0,
++  Mica = 1,
++  MicaAlt = 2,
++  Acrylic = 3
++};
++
+ // Per-QPalette-role custom colors (the "central roles" from https://doc.qt.io/qt-6/qpalette.html).
+ constexpr char kColorWindow[] = "color-window";
+ constexpr char kColorWindowText[] = "color-window-text";
+@@ -116,6 +128,8 @@ constexpr char kIconSizeConfigureButtons[] = "icon_size_configure_buttons";
+ constexpr bool kDefaultDarkMode = false;
+ constexpr bool kDefaultSystemIcons = false;
+ constexpr bool kDefaultUseCustomColorSet = false;
++constexpr WindowBackdrop kDefaultWindowBackdrop = WindowBackdrop::None;
++constexpr bool kDefaultWindowBackdropTranslucentContent = false;
+ constexpr bool kDefaultTabBarSystemColor = false;
+ constexpr bool kDefaultTabBarGradient = true;
+ constexpr TabBarBackground kDefaultTabBarBackground = TabBarBackground::Strawberry;
+diff --git a/src/core/mainwindow.cpp b/src/core/mainwindow.cpp
+index 223fb161a..0e8f6dd09 100644
+--- a/src/core/mainwindow.cpp
++++ b/src/core/mainwindow.cpp
+@@ -232,6 +232,7 @@
+ 
+ #ifdef Q_OS_WIN32
+ #  include "core/windows7thumbbar.h"
++#  include "core/mainwindowbackdrop.h"
+ #endif
+ #ifdef _MSC_VER
+ #  include "core/winsystemmediatransportcontrols.h"
+@@ -453,6 +454,12 @@ MainWindow::MainWindow(Application *app,
+   // Initialize the UI
+   ui_->setupUi(this);
+ 
++#ifdef Q_OS_WIN32
++  // Settings > Appearance > Window backdrop: the window has to be made translucent before its native window is created (winId() below).
++  window_backdrop_ = new MainWindowBackdrop(this, ui_->tabs, ui_->centralWidget);
++  window_backdrop_->Init();
++#endif
++
+ #ifdef _MSC_VER
+   if (!smtc_->Initialize(reinterpret_cast<HWND>(winId()))) {
+     smtc_->deleteLater();
+@@ -1427,6 +1434,10 @@ void MainWindow::ReloadSettings() {
+ 
+   ui_->tabs->ReloadSettings();
+ 
++#ifdef Q_OS_WIN32
++  window_backdrop_->ReloadSettings();
++#endif
++
+ }
+ 
+ void MainWindow::ReloadAllSettings() {
+diff --git a/src/core/mainwindow.h b/src/core/mainwindow.h
+index 210ba7d71..cf378323f 100644
+--- a/src/core/mainwindow.h
++++ b/src/core/mainwindow.h
+@@ -97,6 +97,7 @@ class StreamingFavoritesView;
+ class SmartPlaylistsViewContainer;
+ #ifdef Q_OS_WIN32
+ class Windows7ThumbBar;
++class MainWindowBackdrop;
+ #endif
+ #ifdef _MSC_VER
+ class WinSystemMediaTransportControls;
+@@ -326,6 +327,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
+   Ui_MainWindow *ui_;
+ #ifdef Q_OS_WIN32
+   Windows7ThumbBar *thumbbar_;
++  MainWindowBackdrop *window_backdrop_ = nullptr;
+ #endif
+ #ifdef _MSC_VER
+   WinSystemMediaTransportControls *smtc_;
+diff --git a/src/core/mainwindowbackdrop.cpp b/src/core/mainwindowbackdrop.cpp
+new file mode 100644
+index 000000000..e2bb16921
+--- /dev/null
++++ b/src/core/mainwindowbackdrop.cpp
+@@ -0,0 +1,478 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include <QApplication>
++#include <QCoreApplication>
++#include <QWidget>
++#include <QWindow>
++#include <QScreen>
++#include <QEvent>
++#include <QTimer>
++#include <QPalette>
++#include <QColor>
++
++#include "core/logging.h"
++#include "core/settings.h"
++#include "constants/appearancesettings.h"
++#include "utilities/winbackdrop.h"
++#include "widgets/fancytabwidget.h"
++#include "mainwindowbackdrop.h"
++#include "mainwindowbackdropstylesheet.h"
++
++using namespace AppearanceSettings;
++
++namespace {
++
++// Alpha (0-255) of the colors drawn over the backdrop.
++// window: the main window's Window color, what the style and Strawberry's own widgets (analyzer, moodbar...) fill with.
++// base: Base and AlternateBase, the lists (playlist, collection, files, context...) when "Translucent content areas" is on, else 255.
++// tabbar: the default strawberry/gradient sidebar.
++// chrome: the playlist toolbar, list headers and the player controls / status bar (MainWindowBackdropStyleSheet).
++// field: the search fields.
++struct Tint {
++  int window;
++  int base;
++  int tabbar;
++  int chrome;
++  int field;
++};
++
++// Mica, Mica Alt and Acrylic are tinted by DWM (light or dark, following DWMWA_USE_IMMERSIVE_DARK_MODE), so only a light tint is added.
++constexpr Tint kTintSystemBackdrop = { 48, 150, 110, 64, 120 };
++// The Windows 10 acrylic accent is tinted with the window color (kAccentAcrylicTintAlpha below), the lists get a bit more.
++constexpr Tint kTintAccentAcrylic = { 48, 170, 110, 64, 130 };
++// The plain blur fallback has no tint at all.
++constexpr Tint kTintAccentBlur = { 170, 215, 190, 170, 200 };
++
++// Alpha of the window color used as the Windows 10 acrylic tint (GradientColor).
++constexpr int kAccentAcrylicTintAlpha = 0x99;
++
++Tint TintForMethod(const WinBackdrop::Method method) {
++
++  switch (method) {
++    case WinBackdrop::Method::AccentAcrylic:
++      return kTintAccentAcrylic;
++    case WinBackdrop::Method::AccentBlur:
++      return kTintAccentBlur;
++    case WinBackdrop::Method::SystemBackdrop:
++    case WinBackdrop::Method::None:
++      break;
++  }
++
++  return kTintSystemBackdrop;
++
++}
++
++void SetColorAlpha(QPalette *palette, const QPalette &source, const QPalette::ColorGroup group, const QPalette::ColorRole role, const int alpha) {
++
++  QColor color = source.color(group, role);
++  color.setAlpha(qMin(color.alpha(), alpha));
++  palette->setColor(group, role, color);
++
++}
++
++const char *OpaqueReasonText(const WinBackdrop::OpaqueReason reason) {
++
++  switch (reason) {
++    case WinBackdrop::OpaqueReason::CompositionDisabled:
++      return "desktop composition is disabled";
++    case WinBackdrop::OpaqueReason::RemoteSession:
++      return "Remote Desktop session";
++    case WinBackdrop::OpaqueReason::TransparencyEffectsOff:
++      return "Windows transparency effects are off";
++    case WinBackdrop::OpaqueReason::None:
++      break;
++  }
++
++  return "none";
++
++}
++
++}  // namespace
++
++MainWindowBackdrop::MainWindowBackdrop(QWidget *window, FancyTabWidget *tabs, QWidget *central_widget)
++    : QObject(window),
++      window_(window),
++      tabs_(tabs),
++      central_widget_(central_widget),
++      backdrop_(MainWindowBackdrop::LoadSetting()),
++      translucent_content_(MainWindowBackdrop::LoadTranslucentContentSetting()),
++      translucent_(false),
++      palette_set_(false),
++      updating_(false),
++      update_scheduled_(false),
++      recheck_scheduled_(false),
++      moving_(false),
++      method_(WinBackdrop::Method::None),
++      opaque_reason_(WinBackdrop::OpaqueReason::None),
++      session_hwnd_(nullptr) {}
++
++MainWindowBackdrop::~MainWindowBackdrop() {
++
++  if (translucent_ && QCoreApplication::instance()) {
++    QCoreApplication::instance()->removeNativeEventFilter(this);
++  }
++  // Normally done on WM_DESTROY already.
++  if (session_hwnd_) {
++    WinBackdrop::UnregisterSessionNotification(session_hwnd_);
++    session_hwnd_ = nullptr;
++  }
++
++}
++
++AppearanceSettings::WindowBackdrop MainWindowBackdrop::LoadSetting() {
++
++  Settings s;
++  s.beginGroup(kSettingsGroup);
++  const int value = s.value(kWindowBackdrop, static_cast<int>(kDefaultWindowBackdrop)).toInt();
++  s.endGroup();
++
++  switch (value) {
++    case static_cast<int>(AppearanceSettings::WindowBackdrop::Mica):
++      return AppearanceSettings::WindowBackdrop::Mica;
++    case static_cast<int>(AppearanceSettings::WindowBackdrop::MicaAlt):
++      return AppearanceSettings::WindowBackdrop::MicaAlt;
++    case static_cast<int>(AppearanceSettings::WindowBackdrop::Acrylic):
++      return AppearanceSettings::WindowBackdrop::Acrylic;
++    default:
++      return AppearanceSettings::WindowBackdrop::None;
++  }
++
++}
++
++bool MainWindowBackdrop::LoadTranslucentContentSetting() {
++
++  Settings s;
++  s.beginGroup(kSettingsGroup);
++  const bool translucent_content = s.value(kWindowBackdropTranslucentContent, kDefaultWindowBackdropTranslucentContent).toBool();
++  s.endGroup();
++
++  return translucent_content;
++
++}
++
++WinBackdrop::Type MainWindowBackdrop::ToWinBackdropType(const AppearanceSettings::WindowBackdrop backdrop) {
++
++  switch (backdrop) {
++    case AppearanceSettings::WindowBackdrop::Mica:
++      return WinBackdrop::Type::Mica;
++    case AppearanceSettings::WindowBackdrop::MicaAlt:
++      return WinBackdrop::Type::MicaAlt;
++    case AppearanceSettings::WindowBackdrop::Acrylic:
++      return WinBackdrop::Type::Acrylic;
++    case AppearanceSettings::WindowBackdrop::None:
++      break;
++  }
++
++  return WinBackdrop::Type::None;
++
++}
++
++bool MainWindowBackdrop::IsAvailable(const AppearanceSettings::WindowBackdrop backdrop) {
++
++  return WinBackdrop::IsTypeAvailable(ToWinBackdropType(backdrop));
++
++}
++
++void MainWindowBackdrop::Init() {
++
++  backdrop_ = LoadSetting();
++  translucent_content_ = LoadTranslucentContentSetting();
++  window_->installEventFilter(this);
++
++  if (backdrop_ == AppearanceSettings::WindowBackdrop::None) return;
++
++  if (!IsAvailable(backdrop_)) {
++    qLog(Warning) << "Window backdrop" << static_cast<int>(backdrop_) << "is not available on Windows build" << WinBackdrop::WindowsBuildNumber();
++    return;
++  }
++
++  // The alpha channel of the backing store is chosen when the native window is created.
++  if (window_->testAttribute(Qt::WA_WState_Created)) {
++    qLog(Warning) << "The main window already has a native window, the window backdrop is used after a restart";
++    return;
++  }
++
++  // The window stays translucent even if translucency can't be used right now (Remote Desktop...), it is then drawn opaque
++  // until it can, see Update().
++  window_->setAttribute(Qt::WA_TranslucentBackground, true);
++  translucent_ = true;
++
++  if (central_widget_) central_widget_stylesheet_ = central_widget_->styleSheet();
++
++  // DWM, theme, DPI, setting, session and move/resize messages of the main window.
++  QCoreApplication::instance()->installNativeEventFilter(this);
++
++  qLog(Debug) << "Window backdrop" << static_cast<int>(backdrop_) << "on Windows build" << WinBackdrop::WindowsBuildNumber();
++
++}
++
++void MainWindowBackdrop::ReloadSettings() {
++
++  const AppearanceSettings::WindowBackdrop backdrop = LoadSetting();
++  if (!translucent_ && backdrop != AppearanceSettings::WindowBackdrop::None) {
++    qLog(Debug) << "The window backdrop is used after a restart";
++  }
++  backdrop_ = backdrop;
++  translucent_content_ = LoadTranslucentContentSetting();
++  Update();
++
++}
++
++bool MainWindowBackdrop::IsActive() const {
++
++  return translucent_ && backdrop_ != AppearanceSettings::WindowBackdrop::None && IsAvailable(backdrop_) && opaque_reason_ == WinBackdrop::OpaqueReason::None;
++
++}
++
++bool MainWindowBackdrop::IsDarkPalette() const {
++
++  const QPalette palette = QApplication::palette(window_);
++  return palette.color(QPalette::Active, QPalette::Window).lightness() < palette.color(QPalette::Active, QPalette::WindowText).lightness();
++
++}
++
++void MainWindowBackdrop::ScheduleUpdate() {
++
++  if (update_scheduled_) return;
++  update_scheduled_ = true;
++  // Queued, so it runs after Qt itself has handled the message or event (Qt may reset the frame margins).
++  QTimer::singleShot(0, this, &MainWindowBackdrop::Update);
++
++}
++
++void MainWindowBackdrop::ScheduleRecheck() {
++
++  if (recheck_scheduled_) return;
++  recheck_scheduled_ = true;
++  QTimer::singleShot(0, this, &MainWindowBackdrop::Recheck);
++
++}
++
++void MainWindowBackdrop::Recheck() {
++
++  recheck_scheduled_ = false;
++  if (!translucent_) return;
++
++  if (WinBackdrop::CurrentOpaqueReason() != opaque_reason_) {
++    Update();
++  }
++
++}
++
++void MainWindowBackdrop::Update() {
++
++  update_scheduled_ = false;
++
++  // A window started without a backdrop stays exactly as it is, the backdrop is used after a restart.
++  if (!translucent_ || updating_) return;
++
++  updating_ = true;
++
++  const WinBackdrop::OpaqueReason opaque_reason = WinBackdrop::CurrentOpaqueReason();
++  if (opaque_reason != opaque_reason_) {
++    if (opaque_reason == WinBackdrop::OpaqueReason::None) {
++      qLog(Info) << "Window backdrop: translucency can be used again";
++    }
++    else {
++      qLog(Info) << "Window backdrop: drawing the window opaque," << OpaqueReasonText(opaque_reason);
++    }
++    opaque_reason_ = opaque_reason;
++  }
++
++  ConnectWindowHandle();
++  UpdateSessionNotification();
++  ApplyNative();
++  UpdatePalette();
++  UpdateStyleSheet();
++
++  updating_ = false;
++
++}
++
++void MainWindowBackdrop::ConnectWindowHandle() {
++
++  QWindow *window_handle = window_->windowHandle();
++  if (!window_handle || window_handle == window_handle_) return;
++
++  if (window_handle_) QObject::disconnect(window_handle_, nullptr, this, nullptr);
++  window_handle_ = window_handle;
++  // Moving the window to another screen (other DPI, other display) can reset the frame margins.
++  QObject::connect(window_handle, &QWindow::screenChanged, this, &MainWindowBackdrop::ScheduleUpdate);
++
++}
++
++void MainWindowBackdrop::UpdateSessionNotification() {
++
++  void *hwnd = reinterpret_cast<void*>(window_->internalWinId());
++  if (hwnd == session_hwnd_) return;
++
++  if (session_hwnd_) WinBackdrop::UnregisterSessionNotification(session_hwnd_);
++  session_hwnd_ = nullptr;
++  // WM_WTSSESSION_CHANGE: Remote Desktop connects or disconnects.
++  if (hwnd && WinBackdrop::RegisterSessionNotification(hwnd)) session_hwnd_ = hwnd;
++
++}
++
++void MainWindowBackdrop::ApplyNative() {
++
++  void *hwnd = reinterpret_cast<void*>(window_->winId());
++
++  if (IsActive()) {
++    QColor tint = QApplication::palette(window_).color(QPalette::Active, QPalette::Window);
++    tint.setAlpha(kAccentAcrylicTintAlpha);
++    const WinBackdrop::Method method = WinBackdrop::Apply(hwnd, ToWinBackdropType(backdrop_), IsDarkPalette(), tint.rgba(), moving_);
++    if (method != method_) {
++      qLog(Debug) << "Window backdrop method" << static_cast<int>(method);
++    }
++    if (method == WinBackdrop::Method::None) {
++      qLog(Warning) << "Could not apply the window backdrop";
++    }
++    method_ = method;
++  }
++  else {
++    WinBackdrop::Remove(hwnd);
++    method_ = WinBackdrop::Method::None;
++  }
++
++}
++
++void MainWindowBackdrop::UpdatePalette() {
++
++  if (method_ == WinBackdrop::Method::None) {
++    // The window has an alpha channel: without a backdrop it is filled like a normal window, so it looks as without the backdrop.
++    if (palette_set_) {
++      window_->setPalette(QPalette());
++      palette_set_ = false;
++    }
++    window_->setAutoFillBackground(true);
++    if (tabs_) tabs_->SetBackdropAlpha(255);
++    return;
++  }
++
++  const Tint tint = TintForMethod(method_);
++  // Text on translucent pixels can't use ClearType (Qt falls back to grayscale antialiasing there), so the lists stay opaque
++  // unless "Translucent content areas" is on.
++  const int base_alpha = translucent_content_ ? tint.base : 255;
++
++  const QPalette app_palette = QApplication::palette(window_);
++  QPalette palette;
++  for (const QPalette::ColorGroup group : { QPalette::Active, QPalette::Inactive, QPalette::Disabled }) {
++    SetColorAlpha(&palette, app_palette, group, QPalette::Window, tint.window);
++    SetColorAlpha(&palette, app_palette, group, QPalette::Base, base_alpha);
++    SetColorAlpha(&palette, app_palette, group, QPalette::AlternateBase, base_alpha);
++  }
++
++  window_->setAutoFillBackground(false);
++  if (!palette_set_ || window_->palette() != palette) {
++    window_->setPalette(palette);
++    palette_set_ = true;
++  }
++  if (tabs_) tabs_->SetBackdropAlpha(tint.tabbar);
++
++}
++
++void MainWindowBackdrop::UpdateStyleSheet() {
++
++  if (!central_widget_) return;
++
++  QString stylesheet;
++  if (method_ != WinBackdrop::Method::None) {
++    const Tint tint = TintForMethod(method_);
++    stylesheet = MainWindowBackdropStyleSheet::Build(QApplication::palette(window_), tint.chrome, tint.field);
++  }
++
++  if (stylesheet == backdrop_stylesheet_) return;
++  backdrop_stylesheet_ = stylesheet;
++
++  if (stylesheet.isEmpty()) {
++    central_widget_->setStyleSheet(central_widget_stylesheet_);
++  }
++  else {
++    central_widget_->setStyleSheet(central_widget_stylesheet_ + QLatin1Char('\n') + stylesheet);
++  }
++
++}
++
++bool MainWindowBackdrop::nativeEventFilter(const QByteArray &event_type, void *message, qintptr *result) {
++
++  Q_UNUSED(result)
++
++  if (!translucent_ || event_type != QByteArrayLiteral("windows_generic_MSG")) return false;
++
++  switch (WinBackdrop::ClassifyMessage(message, reinterpret_cast<void*>(window_->internalWinId()))) {
++    case WinBackdrop::MessageAction::Reapply:
++      ScheduleUpdate();
++      break;
++    case WinBackdrop::MessageAction::Recheck:
++      ScheduleRecheck();
++      break;
++    case WinBackdrop::MessageAction::EnterSizeMove:
++      // Windows 10 acrylic accent: a plain blur while moving or resizing.
++      moving_ = true;
++      if (method_ == WinBackdrop::Method::AccentAcrylic && !updating_) ApplyNative();
++      break;
++    case WinBackdrop::MessageAction::ExitSizeMove:
++      if (moving_) {
++        moving_ = false;
++        if (method_ == WinBackdrop::Method::AccentAcrylic && !updating_) ApplyNative();
++      }
++      break;
++    case WinBackdrop::MessageAction::Destroyed:
++      if (session_hwnd_) {
++        WinBackdrop::UnregisterSessionNotification(session_hwnd_);
++        session_hwnd_ = nullptr;
++      }
++      break;
++    case WinBackdrop::MessageAction::None:
++      break;
++  }
++
++  // Never consumed, Qt handles the message as usual.
++  return false;
++
++}
++
++bool MainWindowBackdrop::eventFilter(QObject *obj, QEvent *e) {
++
++  if (obj == window_ && translucent_ && !updating_) {
++    switch (e->type()) {
++      case QEvent::WinIdChange:
++      case QEvent::Show:
++        // Qt resets the frame margins when the window flags change, and a new native window has none of the attributes.
++        Update();
++        break;
++      case QEvent::WindowStateChange:
++        // Maximize, restore, minimize and full screen can reset the frame margins.
++      case QEvent::ApplicationPaletteChange:
++      case QEvent::StyleChange:
++      case QEvent::ThemeChange:
++        // Dark mode and the tint follow the palette.
++        ScheduleUpdate();
++        break;
++      default:
++        break;
++    }
++  }
++
++  return QObject::eventFilter(obj, e);
++
++}
+diff --git a/src/core/mainwindowbackdrop.h b/src/core/mainwindowbackdrop.h
+new file mode 100644
+index 000000000..a03a3f2ca
+--- /dev/null
++++ b/src/core/mainwindowbackdrop.h
+@@ -0,0 +1,103 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef MAINWINDOWBACKDROP_H
++#define MAINWINDOWBACKDROP_H
++
++#include "config.h"
++
++#include <QObject>
++#include <QAbstractNativeEventFilter>
++#include <QByteArray>
++#include <QPointer>
++#include <QString>
++
++#include "constants/appearancesettings.h"
++#include "utilities/winbackdrop.h"
++
++class QWidget;
++class QWindow;
++class QEvent;
++class FancyTabWidget;
++
++// Windows only: Settings > Appearance > Window backdrop for the main window.
++// The window is made translucent (Qt::WA_TranslucentBackground) before its native window is created, so the backdrop can only be
++// switched on with a restart. Switching between backdrops, or back to None, is applied live.
++// While a backdrop is shown, the main window's palette gets a translucent Window color (and translucent Base / AlternateBase colors
++// for the lists when "Translucent content areas" is on), the tabbar draws its default background translucent, and the central widget
++// gets a style sheet that tints the headers, toolbars, player controls and search fields (MainWindowBackdropStyleSheet).
++// The backdrop is applied again when Windows may have reset it (DWM composition, theme, DPI, display, window state and screen changes),
++// and the window is drawn opaque instead while translucency can't be used (no composition, Remote Desktop, transparency effects off).
++class MainWindowBackdrop : public QObject, public QAbstractNativeEventFilter {
++  Q_OBJECT
++
++ public:
++  explicit MainWindowBackdrop(QWidget *window, FancyTabWidget *tabs, QWidget *central_widget);
++  ~MainWindowBackdrop() override;
++
++  // Reads the setting and makes the window translucent if a backdrop is set. Call before the native window is created.
++  void Init();
++
++  // Applies the current setting (Apply / OK in the settings dialog).
++  void ReloadSettings();
++
++  static AppearanceSettings::WindowBackdrop LoadSetting();
++  static bool LoadTranslucentContentSetting();
++  static WinBackdrop::Type ToWinBackdropType(const AppearanceSettings::WindowBackdrop backdrop);
++  static bool IsAvailable(const AppearanceSettings::WindowBackdrop backdrop);
++
++  bool nativeEventFilter(const QByteArray &event_type, void *message, qintptr *result) override;
++
++ protected:
++  bool eventFilter(QObject *obj, QEvent *e) override;
++
++ private:
++  void Update();
++  void UpdatePalette();
++  void UpdateStyleSheet();
++  void ApplyNative();
++  void ScheduleUpdate();
++  void ScheduleRecheck();
++  void Recheck();
++  void UpdateSessionNotification();
++  void ConnectWindowHandle();
++  bool IsActive() const;
++  bool IsDarkPalette() const;
++
++ private:
++  QWidget *window_;
++  FancyTabWidget *tabs_;
++  QWidget *central_widget_;
++  AppearanceSettings::WindowBackdrop backdrop_;
++  bool translucent_content_;
++  bool translucent_;
++  bool palette_set_;
++  bool updating_;
++  bool update_scheduled_;
++  bool recheck_scheduled_;
++  bool moving_;
++  WinBackdrop::Method method_;
++  WinBackdrop::OpaqueReason opaque_reason_;
++  void *session_hwnd_;
++  QPointer<QWindow> window_handle_;
++  QString central_widget_stylesheet_;
++  QString backdrop_stylesheet_;
++};
++
++#endif  // MAINWINDOWBACKDROP_H
+diff --git a/src/core/mainwindowbackdropstylesheet.cpp b/src/core/mainwindowbackdropstylesheet.cpp
+new file mode 100644
+index 000000000..088bd4691
+--- /dev/null
++++ b/src/core/mainwindowbackdropstylesheet.cpp
+@@ -0,0 +1,110 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include <QtGlobal>
++#include <QPalette>
++#include <QColor>
++#include <QString>
++
++#include "mainwindowbackdropstylesheet.h"
++
++using namespace Qt::Literals::StringLiterals;
++
++namespace {
++
++// Alpha of the text color drawn over the tint for the interactive states and the separators.
++constexpr int kAlphaSeparator = 46;
++constexpr int kAlphaHover = 26;
++constexpr int kAlphaPressed = 46;
++constexpr int kAlphaChecked = 36;
++constexpr int kAlphaFieldBorder = 64;
++constexpr int kAlphaFieldBorderHover = 96;
++constexpr int kAlphaCheckedBorder = 170;
++
++QString Rgba(const QColor &color, const int alpha) {
++
++  // Qt reads an alpha of 0 or 1 as a fraction (0.0 - 1.0), so 1 would be opaque.
++  int a = qBound(0, alpha, 255);
++  if (a == 1) a = 2;
++  return QStringLiteral("rgba(%1, %2, %3, %4)").arg(color.red()).arg(color.green()).arg(color.blue()).arg(a);
++
++}
++
++}  // namespace
++
++namespace MainWindowBackdropStyleSheet {
++
++QString Build(const QPalette &palette, const int chrome_alpha, const int field_alpha) {
++
++  const QColor window = palette.color(QPalette::Active, QPalette::Window);
++  const QColor window_text = palette.color(QPalette::Active, QPalette::WindowText);
++  const QColor base = palette.color(QPalette::Active, QPalette::Base);
++  const QColor text = palette.color(QPalette::Active, QPalette::Text);
++  const QColor highlight = palette.color(QPalette::Active, QPalette::Highlight);
++  const QColor highlighted_text = palette.color(QPalette::Active, QPalette::HighlightedText);
++
++  const QString chrome = Rgba(window, chrome_alpha);
++  const QString field = Rgba(base, field_alpha);
++  const QString separator = Rgba(window_text, kAlphaSeparator);
++  const QString hover = Rgba(window_text, kAlphaHover);
++  const QString pressed = Rgba(window_text, kAlphaPressed);
++  const QString checked = Rgba(window_text, kAlphaChecked);
++  const QString checked_border = Rgba(highlight, kAlphaCheckedBorder);
++  const QString field_border = Rgba(text, kAlphaFieldBorder);
++  const QString field_border_hover = Rgba(text, kAlphaFieldBorderHover);
++
++  // The tool buttons of the player controls, the status bar and the playlist toolbar.
++  const QString buttons = u"QWidget#player_controls_container QToolButton, PlaylistContainer QFrame#toolbar QToolButton"_s;
++  auto buttons_state = [&buttons](const QString &state) {
++    QString selectors = buttons;
++    return selectors.replace(u"QToolButton"_s, u"QToolButton"_s + state);
++  };
++
++  QString css;
++
++  // Bars: one tint for the whole bottom area (controls, track slider, status bar), and the playlist toolbar.
++  css += u"QWidget#player_controls_container, PlaylistContainer QFrame#toolbar { background-color: "_s + chrome + u"; }\n"_s;
++
++  // List headers (playlist columns...).
++  css += u"QHeaderView { background-color: "_s + chrome + u"; }\n"_s;
++  css += u"QHeaderView::section { background-color: transparent; color: "_s + window_text.name() + u"; border: none; border-right: 1px solid "_s + separator + u"; border-bottom: 1px solid "_s + separator + u"; padding: 2px 4px; }\n"_s;
++  css += u"QHeaderView::section:hover { background-color: "_s + hover + u"; }\n"_s;
++  css += u"QHeaderView::section:pressed { background-color: "_s + pressed + u"; }\n"_s;
++
++  // Search fields (playlist, collection, radios, streaming). The left padding for the clear button comes from SearchField itself.
++  css += u"SearchField QLineEdit { background-color: "_s + field + u"; color: "_s + text.name() + u"; border: 1px solid "_s + field_border + u"; border-radius: 4px; padding-top: 2px; padding-bottom: 2px; padding-right: 2px; selection-background-color: "_s + highlight.name() + u"; selection-color: "_s + highlighted_text.name() + u"; }\n"_s;
++  css += u"SearchField QLineEdit:hover { border: 1px solid "_s + field_border_hover + u"; }\n"_s;
++  css += u"SearchField QLineEdit:focus { border: 1px solid "_s + highlight.name() + u"; }\n"_s;
++
++  // Tool buttons: transparent until hovered, the native hover and pressed backgrounds are opaque.
++  css += buttons + u" { background-color: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px; }\n"_s;
++  css += buttons_state(u":hover"_s) + u" { background-color: "_s + hover + u"; border: 1px solid "_s + separator + u"; }\n"_s;
++  css += buttons_state(u":pressed"_s) + u" { background-color: "_s + pressed + u"; }\n"_s;
++  css += buttons_state(u":checked"_s) + u" { background-color: "_s + checked + u"; border: 1px solid "_s + checked_border + u"; }\n"_s;
++  // The stop button has a menu (MenuButtonPopup).
++  css += buttons_state(u"[popupMode=\"MenuButtonPopup\"]"_s) + u" { padding-right: 14px; }\n"_s;
++  css += buttons_state(u"::menu-button"_s) + u" { border: none; width: 14px; }\n"_s;
++
++  return css;
++
++}
++
++}  // namespace MainWindowBackdropStyleSheet
+diff --git a/src/core/mainwindowbackdropstylesheet.h b/src/core/mainwindowbackdropstylesheet.h
+new file mode 100644
+index 000000000..fcbaec24a
+--- /dev/null
++++ b/src/core/mainwindowbackdropstylesheet.h
+@@ -0,0 +1,42 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef MAINWINDOWBACKDROPSTYLESHEET_H
++#define MAINWINDOWBACKDROPSTYLESHEET_H
++
++#include "config.h"
++
++#include <QString>
++
++class QPalette;
++
++// Windows only (window backdrop), but plain Qt: the style sheet set on the main window's central widget while a backdrop is shown.
++// The style draws headers, tool buttons and line edits with its own opaque (often native) colors, this replaces them with a
++// translucent tint so the backdrop shows through. Hover, pressed and checked states are drawn with the text color at a low alpha,
++// so they are visible on light and dark palettes. Only widgets inside the central widget are styled (not dialogs, not the menu).
++namespace MainWindowBackdropStyleSheet {
++
++// palette: the opaque application palette.
++// chrome_alpha (0-255): tint of the playlist toolbar, the list headers and the player controls / status bar.
++// field_alpha (0-255): tint of the search fields.
++QString Build(const QPalette &palette, const int chrome_alpha, const int field_alpha);
++
++}  // namespace MainWindowBackdropStyleSheet
++
++#endif  // MAINWINDOWBACKDROPSTYLESHEET_H
+diff --git a/src/core/stylesheetloader.cpp b/src/core/stylesheetloader.cpp
+index 7e9036865..c392e6ce4 100644
+--- a/src/core/stylesheetloader.cpp
++++ b/src/core/stylesheetloader.cpp
+@@ -58,6 +58,20 @@ constexpr float kAlternateBaseColorDifferenceLight = 0.025F;
+ constexpr float kAlternateBaseColorDifferenceDark = 0.025F;
+ constexpr bool kUseTextColorForAlternateBase = false;
+ #endif
++
++QString CssColor(const QColor &color) {
++
++#ifdef Q_OS_WIN32
++  // With a window backdrop (Settings > Appearance) the main window's palette colors are translucent, keep their alpha.
++  if (color.alpha() < 255) {
++    return QStringLiteral("rgba(%1,%2,%3,%4)").arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha());
++  }
++#endif
++
++  return color.name();
++
++}
++
+ }  // namespace
+ 
+ using std::make_shared;
+@@ -149,9 +163,9 @@ void StyleSheetLoader::UpdateStyleSheet(QWidget *widget, SharedPtr<StyleSheetDat
+ 
+ void StyleSheetLoader::ReplaceColor(QString *css, const QString &name, const QPalette &palette, const QPalette::ColorRole role) {
+ 
+-  css->replace(u"%palette-"_s + name + u"-lighter"_s, palette.color(role).lighter().name(), Qt::CaseInsensitive);
+-  css->replace(u"%palette-"_s + name + u"-darker"_s, palette.color(role).darker().name(), Qt::CaseInsensitive);
+-  css->replace(u"%palette-"_s + name, palette.color(role).name(), Qt::CaseInsensitive);
++  css->replace(u"%palette-"_s + name + u"-lighter"_s, CssColor(palette.color(role).lighter()), Qt::CaseInsensitive);
++  css->replace(u"%palette-"_s + name + u"-darker"_s, CssColor(palette.color(role).darker()), Qt::CaseInsensitive);
++  css->replace(u"%palette-"_s + name, CssColor(palette.color(role)), Qt::CaseInsensitive);
+ 
+ }
+ 
+diff --git a/src/settings/appearancesettingspage.cpp b/src/settings/appearancesettingspage.cpp
+index 85fbf91c8..2b907657f 100644
+--- a/src/settings/appearancesettingspage.cpp
++++ b/src/settings/appearancesettingspage.cpp
+@@ -60,6 +60,11 @@
+ #include "settingspage.h"
+ #include "settingsdialog.h"
+ #include "ui_appearancesettingspage.h"
++#ifdef Q_OS_WIN32
++#  include <QStandardItemModel>
++#  include <QStandardItem>
++#  include "core/mainwindowbackdrop.h"
++#endif
+ 
+ using namespace Qt::Literals::StringLiterals;
+ using namespace AppearanceSettings;
+@@ -83,6 +88,30 @@ AppearanceSettingsPage::AppearanceSettingsPage(SettingsDialog *dialog, SharedPtr
+     ui_->combobox_style->addItem(style, style);
+   }
+ 
++  ui_->combobox_window_backdrop->setItemData(0, static_cast<int>(WindowBackdrop::None));
++  ui_->combobox_window_backdrop->setItemData(1, static_cast<int>(WindowBackdrop::Mica));
++  ui_->combobox_window_backdrop->setItemData(2, static_cast<int>(WindowBackdrop::MicaAlt));
++  ui_->combobox_window_backdrop->setItemData(3, static_cast<int>(WindowBackdrop::Acrylic));
++#ifdef Q_OS_WIN32
++  // Mica and Mica Alt need Windows 11 22H2, Acrylic has a fallback for Windows 10.
++  if (QStandardItemModel *backdrop_model = qobject_cast<QStandardItemModel*>(ui_->combobox_window_backdrop->model())) {
++    for (int i = 0; i < backdrop_model->rowCount(); ++i) {
++      const WindowBackdrop backdrop = static_cast<WindowBackdrop>(ui_->combobox_window_backdrop->itemData(i).toInt());
++      if (!MainWindowBackdrop::IsAvailable(backdrop)) {
++        QStandardItem *item = backdrop_model->item(i);
++        item->setEnabled(false);
++        item->setToolTip(tr("Needs Windows 11 22H2 or later"));
++      }
++    }
++  }
++  // The lists stay opaque by default, so their text keeps ClearType.
++  QObject::connect(ui_->combobox_window_backdrop, &QComboBox::currentIndexChanged, this, [this]() {
++    ui_->checkbox_window_backdrop_translucent_content->setEnabled(ui_->combobox_window_backdrop->currentData().toInt() != static_cast<int>(WindowBackdrop::None));
++  });
++#else
++  ui_->widget_window_backdrop->hide();
++#endif
++
+   CreateColorSelectors();
+ 
+   ui_->combobox_background_image_position->setItemData(0, static_cast<int>(BackgroundImagePosition::UpperLeft));
+@@ -164,6 +193,17 @@ void AppearanceSettingsPage::Load() {
+   ui_->checkbox_system_icons->setChecked(s.value(kSystemThemeIcons, kDefaultSystemIcons).toBool());
+ #endif
+ 
++#ifdef Q_OS_WIN32
++  {
++    const WindowBackdrop backdrop = MainWindowBackdrop::LoadSetting();
++    int backdrop_index = ui_->combobox_window_backdrop->findData(static_cast<int>(MainWindowBackdrop::IsAvailable(backdrop) ? backdrop : WindowBackdrop::None));
++    if (backdrop_index < 0) backdrop_index = 0;
++    ui_->combobox_window_backdrop->setCurrentIndex(backdrop_index);
++    ui_->checkbox_window_backdrop_translucent_content->setChecked(MainWindowBackdrop::LoadTranslucentContentSetting());
++    ui_->checkbox_window_backdrop_translucent_content->setEnabled(ui_->combobox_window_backdrop->currentData().toInt() != static_cast<int>(WindowBackdrop::None));
++  }
++#endif
++
+   original_dark_mode_ = s.value(kDarkMode, kDefaultDarkMode).toBool();
+   ui_->checkbox_dark_mode->setChecked(original_dark_mode_);
+ 
+@@ -338,6 +378,11 @@ void AppearanceSettingsPage::Save() {
+ 
+   s.setValue(kDarkMode, Utilities::StyleHasDarkModeSupport(selected_style) ? ui_->checkbox_dark_mode->isChecked() : false);
+ 
++#ifdef Q_OS_WIN32
++  s.setValue(kWindowBackdrop, ui_->combobox_window_backdrop->currentData().toInt());
++  s.setValue(kWindowBackdropTranslucentContent, ui_->checkbox_window_backdrop_translucent_content->isChecked());
++#endif
++
+   // Colors
+   const bool use_custom_color_set = Utilities::StyleHasCustomPaletteColorsSupport(selected_style) && ui_->use_custom_color_set->isChecked();
+   s.setValue(kUseCustomColorSet, use_custom_color_set);
+diff --git a/src/settings/appearancesettingspage.ui b/src/settings/appearancesettingspage.ui
+index cb322bc7d..cc073d625 100644
+--- a/src/settings/appearancesettingspage.ui
++++ b/src/settings/appearancesettingspage.ui
+@@ -68,6 +68,95 @@
+         </item>
+        </layout>
+       </item>
++      <item>
++       <widget class="QWidget" name="widget_window_backdrop" native="true">
++        <layout class="QVBoxLayout" name="layout_window_backdrop">
++         <property name="leftMargin">
++          <number>0</number>
++         </property>
++         <property name="topMargin">
++          <number>0</number>
++         </property>
++         <property name="rightMargin">
++          <number>0</number>
++         </property>
++         <property name="bottomMargin">
++          <number>0</number>
++         </property>
++         <item>
++          <layout class="QHBoxLayout" name="layout_window_backdrop_type">
++           <item>
++            <widget class="QLabel" name="label_window_backdrop">
++             <property name="text">
++              <string>Window backdrop</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QComboBox" name="combobox_window_backdrop">
++             <property name="toolTip">
++              <string>Show the Windows system backdrop through the main window</string>
++             </property>
++             <item>
++              <property name="text">
++               <string>None</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Mica</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Mica Alt</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Acrylic</string>
++              </property>
++             </item>
++            </widget>
++           </item>
++           <item>
++            <spacer name="spacer_window_backdrop">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <widget class="QCheckBox" name="checkbox_window_backdrop_translucent_content">
++           <property name="toolTip">
++            <string>Also show the backdrop through the playlist, collection, files and context. Text there is then drawn with grayscale instead of ClearType antialiasing.</string>
++           </property>
++           <property name="text">
++            <string>Translucent content areas</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <widget class="QLabel" name="label_window_backdrop_info">
++           <property name="text">
++            <string>Mica and Mica Alt need Windows 11 22H2 or later; on Windows 10, Acrylic uses the older acrylic blur. Changing the backdrop, or setting it back to None, applies immediately; turning it on from None needs a restart of Strawberry. The window is drawn opaque while Windows transparency effects are off or in a Remote Desktop session.</string>
++           </property>
++           <property name="wordWrap">
++            <bool>true</bool>
++           </property>
++          </widget>
++         </item>
++        </layout>
++       </widget>
++      </item>
+      </layout>
+     </widget>
+    </item>
+@@ -709,6 +798,8 @@
+   <tabstop>combobox_style</tabstop>
+   <tabstop>checkbox_dark_mode</tabstop>
+   <tabstop>checkbox_system_icons</tabstop>
++  <tabstop>combobox_window_backdrop</tabstop>
++  <tabstop>checkbox_window_backdrop_translucent_content</tabstop>
+   <tabstop>use_system_color_set</tabstop>
+   <tabstop>use_custom_color_set</tabstop>
+   <tabstop>button_dark_colors</tabstop>
+diff --git a/src/utilities/winbackdrop.cpp b/src/utilities/winbackdrop.cpp
+new file mode 100644
+index 000000000..bdb9ca9cd
+--- /dev/null
++++ b/src/utilities/winbackdrop.cpp
+@@ -0,0 +1,382 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include <windows.h>
++#include <dwmapi.h>
++
++#include <cwchar>
++
++#include "winbackdrop.h"
++
++namespace {
++
++// Not in older SDK headers, so defined here with the documented values.
++constexpr DWORD kDwmwaUseImmersiveDarkModeBefore20H1 = 19;
++constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
++constexpr DWORD kDwmwaSystemBackdropType = 38;
++
++constexpr DWORD kDwmsbtAuto = 0;
++constexpr DWORD kDwmsbtMainWindow = 2;       // Mica
++constexpr DWORD kDwmsbtTransientWindow = 3;  // Acrylic
++constexpr DWORD kDwmsbtTabbedWindow = 4;     // Mica Alt
++
++constexpr unsigned long kBuildWindows10_1803 = 17134;
++constexpr unsigned long kBuildWindows10_1809 = 17763;
++constexpr unsigned long kBuildWindows10_20H1 = 18985;
++constexpr unsigned long kBuildWindows11_22H2 = 22621;
++
++// Undocumented, user32.dll (Windows 10+).
++enum AccentState : DWORD {
++  kAccentDisabled = 0,
++  kAccentEnableBlurBehind = 3,
++  kAccentEnableAcrylicBlurBehind = 4
++};
++
++// Use the GradientColor as the acrylic tint.
++constexpr DWORD kAccentFlagGradientColor = 2;
++
++constexpr DWORD kWcaAccentPolicy = 19;
++
++struct AccentPolicy {
++  DWORD accent_state;
++  DWORD accent_flags;
++  DWORD gradient_color;  // 0xAABBGGRR
++  DWORD animation_id;
++};
++
++struct WindowCompositionAttribData {
++  DWORD attrib;
++  PVOID data;
++  SIZE_T data_size;
++};
++
++using SetWindowCompositionAttributeFunc = BOOL (WINAPI*)(HWND, WindowCompositionAttribData*);
++using RtlGetVersionFunc = LONG (WINAPI*)(PRTL_OSVERSIONINFOW);
++using WTSRegisterSessionNotificationFunc = BOOL (WINAPI*)(HWND, DWORD);
++using WTSUnRegisterSessionNotificationFunc = BOOL (WINAPI*)(HWND);
++
++// Window messages, defined here as some are missing from older SDK headers.
++constexpr UINT kWmDestroy = 0x0002;
++constexpr UINT kWmDisplayChange = 0x007E;
++constexpr UINT kWmSettingChange = 0x001A;
++constexpr UINT kWmEnterSizeMove = 0x0231;
++constexpr UINT kWmExitSizeMove = 0x0232;
++constexpr UINT kWmWtsSessionChange = 0x02B1;
++constexpr UINT kWmDpiChanged = 0x02E0;
++constexpr UINT kWmThemeChanged = 0x031A;
++constexpr UINT kWmDwmCompositionChanged = 0x031E;
++
++constexpr DWORD kNotifyForThisSession = 0;
++constexpr DWORD kLoadLibrarySearchSystem32 = 0x00000800;
++
++// Casting through void (*)() avoids -Wcast-function-type with MinGW.
++template<typename T>
++T GetProc(const wchar_t *module_name, const char *proc_name) {
++
++  HMODULE module = GetModuleHandleW(module_name);
++  if (!module) return nullptr;
++  return reinterpret_cast<T>(reinterpret_cast<void (*)()>(GetProcAddress(module, proc_name)));
++
++}
++
++// For DLLs that are not loaded by Qt or Strawberry already, only from the system directory. Never unloaded.
++template<typename T>
++T GetSystemProc(const wchar_t *module_name, const char *proc_name) {
++
++  HMODULE module = GetModuleHandleW(module_name);
++  if (!module) module = LoadLibraryExW(module_name, nullptr, kLoadLibrarySearchSystem32);
++  if (!module) return nullptr;
++  return reinterpret_cast<T>(reinterpret_cast<void (*)()>(GetProcAddress(module, proc_name)));
++
++}
++
++SetWindowCompositionAttributeFunc SetWindowCompositionAttributeProc() {
++
++  static const SetWindowCompositionAttributeFunc func = GetProc<SetWindowCompositionAttributeFunc>(L"user32.dll", "SetWindowCompositionAttribute");
++  return func;
++
++}
++
++bool SetAccent(HWND hwnd, const DWORD accent_state, const DWORD accent_flags, const DWORD gradient_color_abgr) {
++
++  const SetWindowCompositionAttributeFunc set_window_composition_attribute = SetWindowCompositionAttributeProc();
++  if (!set_window_composition_attribute) return false;
++
++  AccentPolicy policy{};
++  policy.accent_state = accent_state;
++  policy.accent_flags = accent_flags;
++  policy.gradient_color = gradient_color_abgr;
++  policy.animation_id = 0;
++
++  WindowCompositionAttribData data{};
++  data.attrib = kWcaAccentPolicy;
++  data.data = &policy;
++  data.data_size = sizeof(policy);
++
++  return set_window_composition_attribute(hwnd, &data) != FALSE;
++
++}
++
++void ExtendFrame(HWND hwnd, const bool whole_client_area) {
++
++  const int margin = whole_client_area ? -1 : 0;
++  const MARGINS margins = { margin, margin, margin, margin };
++  DwmExtendFrameIntoClientArea(hwnd, &margins);
++
++}
++
++DWORD ArgbToAbgr(const unsigned int argb) {
++
++  const DWORD a = (argb >> 24) & 0xFF;
++  const DWORD r = (argb >> 16) & 0xFF;
++  const DWORD g = (argb >> 8) & 0xFF;
++  const DWORD b = argb & 0xFF;
++  return (a << 24) | (b << 16) | (g << 8) | r;
++
++}
++
++}  // namespace
++
++namespace WinBackdrop {
++
++unsigned long WindowsBuildNumber() {
++
++  static const unsigned long build_number = []() -> unsigned long {
++    const RtlGetVersionFunc rtl_get_version = GetProc<RtlGetVersionFunc>(L"ntdll.dll", "RtlGetVersion");
++    if (!rtl_get_version) return 0;
++    RTL_OSVERSIONINFOW version_info{};
++    version_info.dwOSVersionInfoSize = sizeof(version_info);
++    if (rtl_get_version(&version_info) != 0) return 0;  // STATUS_SUCCESS
++    return version_info.dwBuildNumber;
++  }();
++
++  return build_number;
++
++}
++
++bool SystemBackdropAvailable() {
++
++  return WindowsBuildNumber() >= kBuildWindows11_22H2;
++
++}
++
++bool AccentPolicyAvailable() {
++
++  return SetWindowCompositionAttributeProc() != nullptr;
++
++}
++
++bool IsTypeAvailable(const Type type) {
++
++  switch (type) {
++    case Type::None:
++      return true;
++    case Type::Mica:
++    case Type::MicaAlt:
++      return SystemBackdropAvailable();
++    case Type::Acrylic:
++      return SystemBackdropAvailable() || AccentPolicyAvailable();
++  }
++
++  return false;
++
++}
++
++void SetDarkMode(void *window, const bool dark) {
++
++  HWND hwnd = static_cast<HWND>(window);
++  if (!hwnd) return;
++
++  const unsigned long build_number = WindowsBuildNumber();
++  if (build_number < kBuildWindows10_1809) return;
++
++  const BOOL value = dark ? TRUE : FALSE;
++  const DWORD attribute = build_number >= kBuildWindows10_20H1 ? kDwmwaUseImmersiveDarkMode : kDwmwaUseImmersiveDarkModeBefore20H1;
++  DwmSetWindowAttribute(hwnd, attribute, &value, sizeof(value));
++
++}
++
++bool CompositionEnabled() {
++
++  // Always enabled since Windows 8, but a driver or a Windows 7 basic theme can turn it off.
++  BOOL enabled = FALSE;
++  if (FAILED(DwmIsCompositionEnabled(&enabled))) return false;
++  return enabled != FALSE;
++
++}
++
++bool IsRemoteSession() {
++
++  return GetSystemMetrics(SM_REMOTESESSION) != 0;
++
++}
++
++bool TransparencyEffectsEnabled() {
++
++  DWORD value = 1;
++  DWORD size = sizeof(value);
++  // A missing value means the default, which is on.
++  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS) {
++    return true;
++  }
++  return value != 0;
++
++}
++
++OpaqueReason CurrentOpaqueReason() {
++
++  if (!CompositionEnabled()) return OpaqueReason::CompositionDisabled;
++  if (IsRemoteSession()) return OpaqueReason::RemoteSession;
++  if (!TransparencyEffectsEnabled()) return OpaqueReason::TransparencyEffectsOff;
++  return OpaqueReason::None;
++
++}
++
++Method Apply(void *window, const Type type, const bool dark, const unsigned int tint_argb, const bool moving) {
++
++  HWND hwnd = static_cast<HWND>(window);
++  if (!hwnd || !IsWindow(hwnd)) return Method::None;
++
++  SetDarkMode(hwnd, dark);
++
++  if (type == Type::None) {
++    Remove(hwnd);
++    return Method::None;
++  }
++
++  if (SystemBackdropAvailable()) {
++    // An accent policy left over from the fallback would be drawn on top of the system backdrop.
++    if (AccentPolicyAvailable()) SetAccent(hwnd, kAccentDisabled, 0, 0);
++    DWORD backdrop_type = kDwmsbtMainWindow;
++    switch (type) {
++      case Type::Mica:
++        backdrop_type = kDwmsbtMainWindow;
++        break;
++      case Type::MicaAlt:
++        backdrop_type = kDwmsbtTabbedWindow;
++        break;
++      case Type::Acrylic:
++      case Type::None:
++        backdrop_type = kDwmsbtTransientWindow;
++        break;
++    }
++    // The backdrop is drawn behind the frame only, so extend the frame into the whole client area ("sheet of glass").
++    ExtendFrame(hwnd, true);
++    if (SUCCEEDED(DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop_type, sizeof(backdrop_type)))) {
++      return Method::SystemBackdrop;
++    }
++    ExtendFrame(hwnd, false);
++  }
++
++  // Windows 10 and Windows 11 21H2: only Acrylic is offered, a stored Mica setting gets the same fallback.
++  // The accent policy uses the window's own alpha, extending the frame would break it.
++  if (!AccentPolicyAvailable()) return Method::None;
++  ExtendFrame(hwnd, false);
++  if (WindowsBuildNumber() >= kBuildWindows10_1803) {
++    // The acrylic accent lags behind the mouse while the window is moved or resized, a plain blur doesn't (well-known workaround).
++    if (moving && SetAccent(hwnd, kAccentEnableBlurBehind, 0, 0)) {
++      return Method::AccentAcrylic;
++    }
++    // A fully transparent tint makes the acrylic disappear on some builds.
++    unsigned int tint = tint_argb;
++    if (((tint >> 24) & 0xFF) < 0x10) tint = (tint & 0x00FFFFFFU) | 0x10000000U;
++    if (SetAccent(hwnd, kAccentEnableAcrylicBlurBehind, kAccentFlagGradientColor, ArgbToAbgr(tint))) {
++      return Method::AccentAcrylic;
++    }
++  }
++  if (SetAccent(hwnd, kAccentEnableBlurBehind, 0, 0)) {
++    return Method::AccentBlur;
++  }
++
++  return Method::None;
++
++}
++
++void Remove(void *window) {
++
++  HWND hwnd = static_cast<HWND>(window);
++  if (!hwnd || !IsWindow(hwnd)) return;
++
++  if (SystemBackdropAvailable()) {
++    const DWORD backdrop_type = kDwmsbtAuto;
++    DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop_type, sizeof(backdrop_type));
++  }
++  if (AccentPolicyAvailable()) {
++    SetAccent(hwnd, kAccentDisabled, 0, 0);
++  }
++  ExtendFrame(hwnd, false);
++
++}
++
++MessageAction ClassifyMessage(const void *message, void *window) {
++
++  const MSG *msg = static_cast<const MSG*>(message);
++  if (!msg || !window || msg->hwnd != static_cast<HWND>(window)) return MessageAction::None;
++
++  switch (msg->message) {
++    case kWmDwmCompositionChanged:
++    case kWmThemeChanged:
++    case kWmDpiChanged:
++    case kWmDisplayChange:
++      return MessageAction::Reapply;
++    case kWmSettingChange: {
++      // "ImmersiveColorSet" is sent when the light/dark mode, the accent color or the transparency effects setting change.
++      const wchar_t *area = reinterpret_cast<const wchar_t*>(msg->lParam);
++      if (area && std::wcscmp(area, L"ImmersiveColorSet") == 0) return MessageAction::Reapply;
++      return MessageAction::Recheck;
++    }
++    case kWmWtsSessionChange:
++      return MessageAction::Recheck;
++    case kWmEnterSizeMove:
++      return MessageAction::EnterSizeMove;
++    case kWmExitSizeMove:
++      return MessageAction::ExitSizeMove;
++    case kWmDestroy:
++      return MessageAction::Destroyed;
++    default:
++      break;
++  }
++
++  return MessageAction::None;
++
++}
++
++bool RegisterSessionNotification(void *window) {
++
++  HWND hwnd = static_cast<HWND>(window);
++  if (!hwnd || !IsWindow(hwnd)) return false;
++
++  static const WTSRegisterSessionNotificationFunc func = GetSystemProc<WTSRegisterSessionNotificationFunc>(L"wtsapi32.dll", "WTSRegisterSessionNotification");
++  if (!func) return false;
++  return func(hwnd, kNotifyForThisSession) != FALSE;
++
++}
++
++void UnregisterSessionNotification(void *window) {
++
++  HWND hwnd = static_cast<HWND>(window);
++  if (!hwnd) return;
++
++  static const WTSUnRegisterSessionNotificationFunc func = GetSystemProc<WTSUnRegisterSessionNotificationFunc>(L"wtsapi32.dll", "WTSUnRegisterSessionNotification");
++  if (!func) return;
++  func(hwnd);
++
++}
++
++}  // namespace WinBackdrop
+diff --git a/src/utilities/winbackdrop.h b/src/utilities/winbackdrop.h
+new file mode 100644
+index 000000000..196b046ed
+--- /dev/null
++++ b/src/utilities/winbackdrop.h
+@@ -0,0 +1,103 @@
++/*
++ * Strawberry Music Player
++ * This file is part of Strawberry.
++ *
++ * Strawberry is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * Strawberry is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with Strawberry.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef WINBACKDROP_H
++#define WINBACKDROP_H
++
++// Windows only, plain Win32 (no Qt): system backdrop (Mica, Mica Alt, Acrylic) behind a top-level window.
++// Windows 11 22H2 and later: DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) with the frame extended into the whole client area.
++// Windows 10 and Windows 11 21H2: the undocumented SetWindowCompositionAttribute accent policy (acrylic, else blur).
++// The window's client area must be drawn with per-pixel alpha (Qt::WA_TranslucentBackground) for the backdrop to show.
++
++namespace WinBackdrop {
++
++enum class Type {
++  None,
++  Mica,
++  MicaAlt,
++  Acrylic
++};
++
++enum class Method {
++  None,            // Nothing applied (or removed)
++  SystemBackdrop,  // DWMWA_SYSTEMBACKDROP_TYPE (Windows 11 22H2+), DWM draws its own tint
++  AccentAcrylic,   // ACCENT_ENABLE_ACRYLICBLURBEHIND with a gradient tint color
++  AccentBlur       // ACCENT_ENABLE_BLURBEHIND, no tint: the application must draw a stronger tint itself
++};
++
++// Why translucency can't be used right now, the window must then be drawn opaque.
++enum class OpaqueReason {
++  None,                   // Translucency can be used
++  CompositionDisabled,    // DwmIsCompositionEnabled() is false (Windows 7 basic theme, some drivers)
++  RemoteSession,          // GetSystemMetrics(SM_REMOTESESSION): Remote Desktop doesn't compose translucent windows reliably
++  TransparencyEffectsOff  // Settings > Personalization > Colors > Transparency effects is off (EnableTransparency = 0)
++};
++
++// What a window message means for the backdrop, see ClassifyMessage().
++enum class MessageAction {
++  None,
++  Reapply,        // DWM / theme / DPI / display changed: the frame margins and attributes may have been reset, apply again
++  Recheck,        // A setting or the session changed: check OpaqueReason again
++  EnterSizeMove,  // WM_ENTERSIZEMOVE: the user starts moving or resizing the window
++  ExitSizeMove,   // WM_EXITSIZEMOVE
++  Destroyed       // WM_DESTROY: unregister the session notification
++};
++
++// Windows build number from RtlGetVersion (not affected by the manifest), 0 if unknown.
++unsigned long WindowsBuildNumber();
++
++// Windows 11 22H2 (build 22621) or later.
++bool SystemBackdropAvailable();
++
++// SetWindowCompositionAttribute is exported by user32.dll.
++bool AccentPolicyAvailable();
++
++// Whether a backdrop type can be shown on this Windows version.
++// Mica and Mica Alt need Windows 11 22H2, Acrylic falls back to the accent policy on older versions.
++bool IsTypeAvailable(const Type type);
++
++// Sets DWMWA_USE_IMMERSIVE_DARK_MODE (attribute 20, or 19 before Windows 10 20H1). Does nothing before Windows 10 1809.
++void SetDarkMode(void *hwnd, const bool dark);
++
++// Checked in this order: composition, Remote Desktop session, the user's transparency effects setting.
++OpaqueReason CurrentOpaqueReason();
++bool CompositionEnabled();
++bool IsRemoteSession();
++bool TransparencyEffectsEnabled();
++
++// Applies the backdrop to the top-level window, tint_argb is 0xAARRGGBB and is only used by the accent acrylic fallback.
++// Returns the method that was used, Method::None if the type is None or nothing could be applied.
++// moving: the window is being moved or resized (between WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE). The acrylic accent lags behind the
++// mouse then, so a plain blur is used instead; the returned method is still Method::AccentAcrylic, call Apply() again when done.
++Method Apply(void *hwnd, const Type type, const bool dark, const unsigned int tint_argb, const bool moving = false);
++
++// Removes everything Apply() set, except the dark mode attribute.
++void Remove(void *hwnd);
++
++// msg is a MSG* from a native event filter. Returns MessageAction::None for messages to other windows than hwnd.
++MessageAction ClassifyMessage(const void *msg, void *hwnd);
++
++// WTSRegisterSessionNotification(NOTIFY_FOR_THIS_SESSION), so the window gets WM_WTSSESSION_CHANGE when a Remote Desktop session
++// connects or disconnects. wtsapi32.dll is loaded on demand. Unregister before the window is destroyed.
++bool RegisterSessionNotification(void *hwnd);
++void UnregisterSessionNotification(void *hwnd);
++
++}  // namespace WinBackdrop
++
++#endif  // WINBACKDROP_H
+diff --git a/src/widgets/fancytabwidget.cpp b/src/widgets/fancytabwidget.cpp
+index 40ba63a38..6df94f727 100644
+--- a/src/widgets/fancytabwidget.cpp
++++ b/src/widgets/fancytabwidget.cpp
+@@ -328,6 +328,15 @@ void FancyTabWidget::SetBackgroundPixmap(const QPixmap &pixmap) {
+ 
+ }
+ 
++void FancyTabWidget::SetBackdropAlpha(const int alpha) {
++
++  const int backdrop_alpha = qBound(0, alpha, 255);
++  if (backdrop_alpha == backdrop_alpha_) return;
++  backdrop_alpha_ = backdrop_alpha;
++  update();
++
++}
++
+ void FancyTabWidget::SetCurrentIndex(int idx) {
+ 
+   Q_ASSERT(count() > 0);
+@@ -372,6 +381,7 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+ 
+   QString key = QString::asprintf("mh_vertical %d %d %d %d %d", backgroundRect.width(), backgroundRect.height(), bg_color_.rgb(), (bg_gradient_ ? 1 : 0), (background_pixmap_.isNull() ? 0 : 1));
+   key += QString::asprintf(" %d %d %u %u %d %lld %d %d %d %d %d %d %d %d", bg_mode_, (bg_gradient_custom_colors_ ? 1 : 0), bg_gradient_start_color_.rgba(), bg_gradient_end_color_.rgba(), bg_gradient_direction_, static_cast<long long>(bg_image_.cacheKey()), bg_image_position_, bg_image_max_size_, (bg_image_stretch_ ? 1 : 0), (bg_image_keep_aspect_ratio_ ? 1 : 0), (bg_image_do_not_cut_ ? 1 : 0), (bg_image_tile_ ? 1 : 0), bg_image_opacity_, (bg_image_tint_ ? 1 : 0));
++  if (backdrop_alpha_ < 255) key += QString::asprintf(" backdrop %d", backdrop_alpha_);
+   // The plain gradient background is always a gradient.
+   const bool draw_gradient = bg_gradient_ || bg_mode_ == static_cast<int>(AppearanceSettings::TabBarBackground::Gradient);
+ 
+@@ -379,8 +389,18 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+   if (!QPixmapCache::find(key, &pixmap)) {
+ 
+     pixmap = QPixmap(backgroundRect.size());
++    // With a window backdrop the default color and gradient are translucent, a custom gradient and images are drawn as they are.
++    const bool translucent = backdrop_alpha_ < 255;
++    if (translucent) pixmap.fill(Qt::transparent);
+     QPainter p(&pixmap);
+-    p.fillRect(backgroundRect, bg_color_);
++    if (!translucent) {
++      p.fillRect(backgroundRect, bg_color_);
++    }
++    else if (!draw_gradient) {
++      QColor color(bg_color_);
++      color.setAlpha(color.alpha() * backdrop_alpha_ / 255);
++      p.fillRect(backgroundRect, color);
++    }
+ 
+     // Draw the gradient fill.
+     if (draw_gradient) {
+@@ -399,8 +419,14 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
+           grad = QLinearGradient(backgroundRect.topRight(), backgroundRect.bottomLeft());
+           break;
+       }
+-      grad.setColorAt(0, bg_gradient_custom_colors_ ? bg_gradient_start_color_ : bg_color_.lighter(117));
+-      grad.setColorAt(1, bg_gradient_custom_colors_ ? bg_gradient_end_color_ : shadow.darker(109));
++      QColor gradient_start = bg_gradient_custom_colors_ ? bg_gradient_start_color_ : bg_color_.lighter(117);
++      QColor gradient_end = bg_gradient_custom_colors_ ? bg_gradient_end_color_ : shadow.darker(109);
++      if (translucent && !bg_gradient_custom_colors_) {
++        gradient_start.setAlpha(gradient_start.alpha() * backdrop_alpha_ / 255);
++        gradient_end.setAlpha(gradient_end.alpha() * backdrop_alpha_ / 255);
++      }
++      grad.setColorAt(0, gradient_start);
++      grad.setColorAt(1, gradient_end);
+       p.fillRect(rect, grad);
+ 
+       QColor light(255, 255, 255, 80);
+diff --git a/src/widgets/fancytabwidget.h b/src/widgets/fancytabwidget.h
+index 98c17bc61..617852715 100644
+--- a/src/widgets/fancytabwidget.h
++++ b/src/widgets/fancytabwidget.h
+@@ -78,6 +78,8 @@ class FancyTabWidget : public QTabWidget {
+   // The cover of the playing song, used for the album cover sidebar background.
+   void SetAlbumCoverImage(const QImage &image);
+   int IndexOfTab(QWidget *widget);
++  // Alpha of the default background while the main window shows a window backdrop (Windows), 255 is opaque (no backdrop).
++  void SetBackdropAlpha(const int alpha);
+ 
+   static QColor DefaultTabbarBgColor();
+ 
+@@ -131,6 +133,7 @@ class FancyTabWidget : public QTabWidget {
+   int bg_image_blur_radius_ = 0;
+   int bg_image_opacity_ = 100;
+   bool bg_image_tint_ = false;
++  int backdrop_alpha_ = 255;
+ 
+   void UpdateBackgroundImage();
+   int iconsize_smallsidebar_;

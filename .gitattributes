@@ -1,0 +1,2 @@
+# Akousma: keep the local patches byte for byte (no CRLF conversion on Windows checkouts).
+akousma/patches/** -text
