@@ -1,0 +1,231 @@
+Akousma build (Strawberry with playlist-lock, album art, moodbar, sidebar background, window backdrop
+and branding patches, and crash-on-launch fix)
+
+IMPORTANT: extract the WHOLE zip into the folder you run Build-Strawberry.ps1 from, replacing the old files
+(Build-Strawberry.ps1, patched\ and patches\). The script only applies the patches that are in the patches folder next
+to it: a patch that isn't there is simply not built in (that is how the Tabbar background group goes missing).
+
+Run from this folder in PowerShell 7 (pwsh). Every *.patch and *.diff file in the patches folder is applied
+automatically, whatever its name, so -StrawberryPatch / -GstGoodPatch are not needed:
+  strawberry-album-art.patch, strawberry-custom-framerate.patch,
+  strawberry-moodbar.patch, strawberry-playlist-lock.patch,
+  strawberry-sidebar-background.patch,
+  strawberry-zz-window-backdrop.patch, strawberry-zzz-branding.patch -> strawberry
+  gstreamer-flacparse-invalid-frame.patch                           -> gst-plugins-good
+  qtbase-disable-openssl-hash.patch                                 -> qtbase
+  any other name (e.g. mica.patch, my-fix.diff)                     -> strawberry
+Routing: a name that starts with a package name goes to that package (qtbase-*, gstreamer-* -> gst-plugins-good,
+gst-plugins-bad-*, glib-networking-*, ...); every other file goes to strawberry. Careful: a strawberry patch named
+like a package (taglib-x.patch, flac-x.patch) goes to that package; rename it (e.g. strawberry-taglib-x.patch).
+
+Check that every patch went in. At the top of the log (-LogPath) the script prints every patch file it found:
+  Patch files found in <this folder>\patches: 9
+    strawberry-sidebar-background.patch           -> strawberry         apply
+    ...
+When strawberry is built, each patch gets its own line, then a total:
+  strawberry local patches (7, in this order): strawberry-album-art.patch, ...
+  strawberry patch [7/7] applied: strawberry-zzz-branding.patch
+  strawberry local patches: 7 applied, 0 already applied, 0 failed (of 7)
+A patch that does not apply stops the build ("strawberry patch [n/7] <name> FAILED to apply ... The build stops
+here"); a file in patches with no diff in it, or in a subfolder that is not a package name, stops the run at the start.
+
+NEW: album art, moodbar and sidebar background (three new strawberry patches)
+The command lines don't change (see "Strawberry 1.2.31, with your paths" below, and -StrawberryRef 82309fc):
+the new patches are in the patches folder, so they are applied automatically, in name order, and strawberry is
+rebuilt incrementally once. They were checked on 1.2.31 and 82309fc together with the framerate and playlist-lock
+patches (in name order, in the order framerate, lock, album-art, moodbar, sidebar, and with -NoPlaylistLock),
+on LF and CRLF trees, with the same patch steps this script uses. If you pass -StrawberryPatch yourself, list all five:
+  -StrawberryPatch .\patches\strawberry-custom-framerate.patch,.\patches\strawberry-playlist-lock.patch,.\patches\strawberry-album-art.patch,.\patches\strawberry-moodbar.patch,.\patches\strawberry-sidebar-background.patch
+
+strawberry-album-art.patch
+- Settings > Covers > Album cover types: the default order is now Unset, Embedded, Manual, Automatic, so the cover in
+  an MP3's tags wins over pictures found in its folder. The covers settings page used to save its own default
+  (Unset, Manual, Automatic, Embedded), which put folder pictures above embedded covers: a config still holding exactly
+  that old order is changed once. An order you set yourself afterwards is kept.
+- New, on by default (Settings > Covers): "Only use album directory images named like a cover (cover, front, folder,
+  albumart)". Before, ANY jpg/png/gif next to a song could become its cover (e.g. a random picture in Downloads).
+- New, on by default (Settings > Covers > Saving album covers): "Also embed covers in the music files' tags". Covers set
+  with Load cover from disk / from URL / Search for covers / drag and drop / the automatic search, in the now playing area
+  and in the Cover Manager's right-click menu, are also written into the file (ID3v2 APIC front cover for MP3); the cache
+  or album folder copy is still saved. Not included: Cover Manager > Fetch missing covers, and the Edit track information
+  dialog (it has its own "Embedded album cover" checkbox).
+- Setting a cover now also works for files that are not in the collection, and for files without album/artist tags
+  (the cover then goes into the file's tags).
+- MP3s with several pictures show the front cover (before: the first picture, e.g. a back cover).
+- Cover Manager > Export covers: "Export embedded covers" is on by default (once).
+- One-time full collection rescan on the first start of the new build, so songs already in the collection get their
+  covers read again (log: "Rescanning the collection once for the album cover changes."). Later: Tools > Do a full
+  collection rescan.
+- If an MP3's embedded cover still doesn't show: check that imageformats\qjpeg.dll (and qgif, qico, qwebp...) is in the
+  output next to strawberry.exe; without Qt's JPEG plugin no JPEG cover can be decoded.
+Check: an MP3 with a cover in its tags, alone in a folder or next to an unrelated picture, shows its own cover.
+Right-click the cover > Load cover from disk: the picture is shown and written into the file (ffprobe file.mp3 shows an
+"(attached pic)" stream; or python -c "import mutagen.id3 as m; print(m.ID3('file.mp3').getall('APIC'))").
+
+strawberry-moodbar.patch
+- The moodbar is shown on the seekbar by default. Old configs stored "normal seekbar" on every start, so a stored normal
+  seekbar is switched to the moodbar once; choosing Normal again afterwards sticks; a Waveform choice is kept.
+- Settings > Moodbar > "Show the moodbar in the seekbar" is the same setting as Moodbar in the seekbar's right-click
+  menu, so the settings page and the menu always agree (before, the moodbar only appeared after the right-click menu).
+- The moodbar needs FFTW3 at build time for its fast spectrum element; without it, it falls back to GStreamer's
+  "spectrum" element (gst-plugins-good), which then has to be in the output.
+Check: play a song with your existing config: the seekbar shows the moodbar; untick the setting, Apply: normal seekbar.
+
+strawberry-sidebar-background.patch
+Settings > Appearance > Tabbar background (laid out like the playlist "Background image" group; the defaults look
+exactly like before):
+- Default background (strawberry graphics) / Plain gradient, no graphics / Album cover (playing song) / Custom image.
+- Custom gradient colors (start, end) and Direction: Horizontal (as before) / Vertical / Diagonal.
+- Image options like the playlist background: Position, Max image size, Stretch image to fill the tabbar, Keep aspect
+  ratio, Do not cut image, Blur amount, Opacity; plus Tile image and Tint the image with the tabbar color.
+Applied with Apply / OK.
+
+strawberry-zz-window-backdrop.patch (NEW, updated: rough edges fixed)
+Goes in the patches folder; "zz" makes it sort after the other strawberry-*.patch files, which it needs: it changes
+code added by strawberry-sidebar-background.patch (tabbar painting). If you pass -StrawberryPatch yourself, list it last.
+Settings > Appearance > Style > Window backdrop: None (default, stock look) / Mica / Mica Alt / Acrylic, and
+"Translucent content areas" (default OFF, only enabled when a backdrop is chosen).
+- Windows 11 22H2 (build 22621) or later: DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) Mica / Mica Alt (tabbed) /
+  Acrylic (transient), with the frame extended into the whole client area. The title bar is drawn in the same material.
+- Windows 10 and Windows 11 21H2: only Acrylic is offered (Mica and Mica Alt are greyed out); it uses the undocumented
+  SetWindowCompositionAttribute acrylic accent tinted with the window color, or a plain blur if that fails. While the
+  window is moved or resized the accent is switched to a plain blur (no acrylic lag) and back to acrylic afterwards.
+- Translucent: the sidebar (default strawberry graphics / plain gradient), playlist toolbar, column headers, player
+  controls, status bar and menu bar. Headers, tool buttons and search fields get a light/dark semi-transparent tint
+  with visible hover / pressed / checked states (style sheet on the main window's central widget only; dialogs,
+  settings and menus are not touched).
+- Translucent content areas OFF (default): the playlist, collection, files, context and other lists stay opaque, so
+  their text keeps ClearType. Text drawn on translucent pixels can't use ClearType (Qt and Windows fall back to
+  grayscale antialiasing there), and the lists are where most text is. ON: the lists also show the backdrop, dimmed,
+  as in the first version of this patch. Applies on Apply / OK.
+- The window is drawn opaque (stock colors), automatically and live, while translucency can't be used: in a Remote
+  Desktop session (SM_REMOTESESSION, re-checked when a session connects/disconnects), when Windows "Transparency
+  effects" are off (HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\EnableTransparency = 0,
+  re-read on setting changes) and when DWM composition is off. The backdrop comes back when the condition goes away.
+- The backdrop and frame margins are applied again when Windows may have reset them: DWM composition, theme, light/dark
+  or accent change, DPI change, display change, moving to another screen, maximize / restore / minimize / full screen.
+- A custom tabbar gradient, custom image or album cover (sidebar background patch) is drawn as before, with the backdrop
+  behind it. Dark title bar / dark Mica follow the palette (Dark mode / custom colors).
+- Changing between Mica / Mica Alt / Acrylic, or back to None, applies on Apply / OK. Turning it ON from None needs a
+  restart of Strawberry (the window's alpha channel is chosen when the window is created).
+- With Window backdrop = None nothing of this runs: no translucency, no style sheet, no palette change, no message hooks.
+Known limitations: on battery saver, or for an inactive window, Windows shows its plain fallback color instead of the
+material (normal Windows behaviour). Small text on translucent parts (headers, toolbar, controls) uses grayscale
+antialiasing. Playlist tabs, scroll bars and push buttons keep the style's own colors.
+Check: Settings > Appearance > Window backdrop = Mica, OK, restart Strawberry: the desktop/wallpaper tint shows through
+the sidebar, toolbar, headers and controls; the playlist is opaque. Tick Translucent content areas, Apply: the playlist
+shows the backdrop dimmed. Switch to Mica Alt / Acrylic and Apply: changes immediately. Toggle Windows dark mode or
+Strawberry's Dark mode: title bar and tint follow. Turn Windows Settings > Personalization > Colors > Transparency
+effects off: Strawberry turns opaque; on again: the backdrop returns. Maximize/restore and drag to another monitor: no
+black areas. Windows 10 Acrylic: drag the window, it moves without lag. Back to None, OK: stock look. The log (with
+--verbose / debug output) shows "Window backdrop ... on Windows build ...", the method used, and "drawing the window
+opaque, <reason>" / "translucency can be used again".
+
+strawberry-zzz-branding.patch (NEW): Akousma
+Goes in the patches folder; "zzz" makes it sort last (after strawberry-zz-window-backdrop.patch). It needs
+strawberry-custom-framerate.patch (it replaces the contributor line that patch adds with the lead developer entry). If
+you pass -StrawberryPatch yourself, list it last.
+- The app is shown as "Akousma": main window title (and "<song> - Akousma" while playing, dialog titles end with it
+  too), Help > About Akousma, tray icon tooltip, notification / OSD title, MPRIS player name, Discord icon tooltip,
+  error dialog title ("Akousma Error"), strawberry --version ("Akousma <version> (based on Strawberry)").
+- About dialog: "Akousma lead developer: Genki (genki_jp0)" at the top, then "Akousma is a music player and music
+  collection organizer, developed by Genki (genki_jp0) as a separate project.", "Akousma's source code is available
+  on GitHub (github.com/Genki-jp0/Akousma)." (a link to https://github.com/Genki-jp0/Akousma, the GPL needs the
+  fork's own source offered) and a "Based on Strawberry by Jonas Kvinge and contributors" line with a link to
+  www.strawberrymusicplayer.org. All Strawberry and Clementine credits, the GPL notice, the upstream source link and
+  the sponsor paragraph stay (GPL-3.0 requires keeping them); the headings are now "Strawberry author and maintainer"
+  and "Strawberry contributors".
+- Links to "this app" now go to https://github.com/Genki-jp0/Akousma: the About dialog source link above, the
+  installer's Apps & features "About" / support link (URLInfoAbout, PRODUCT_WEB_SITE), and for Linux packages the
+  AppStream homepage, source (vcs-browser) and bug tracker (.../Akousma/issues) links, the Debian "Homepage" and the
+  RPM "URL". Links that credit Strawberry, the sponsor/donate links, links to upstream services (OAuth redirect pages,
+  the wiki page for the Spotify plugin, translations) and the user agent string are unchanged.
+- strawberry.exe file properties (Explorer > Properties > Details, Task Manager): Product name and File description
+  "Akousma".
+- Installer (StrawberrySetup): title "Akousma Setup", Start menu folder and shortcut "Akousma", Apps & features entry
+  "Akousma", publisher "Genki (genki_jp0)", Default apps name "Akousma". Install folder (Program Files\Strawberry
+  Music Player), uninstall registry key and setup file name (StrawberrySetup-*.exe) are unchanged, so it upgrades your
+  existing install in place.
+- NOT changed, on purpose: strawberry.exe name, settings (HKCU\Software\Strawberry\Strawberry) and the collection
+  database (%LOCALAPPDATA%\strawberry\strawberry), so your settings, playlists and collection are kept. Changing those
+  would make Akousma start with empty settings and an empty collection, separate from upstream Strawberry.
+- Also NOT changed: the update checker (Tools > Check for updates..., QtSparkle). It still reads upstream's feed at
+  https://www.strawberrymusicplayer.org/sparkle-windows-msvc-x64 and compares it with the Strawberry version number,
+  so it reports new upstream Strawberry releases (with upstream's download link), not Akousma builds.
+Check: start it: the title bar says "Akousma"; press F1: the About dialog shows you as lead developer; hover the tray
+icon: "Akousma"; strawberry.exe > Properties > Details: Product name Akousma; click the GitHub
+(github.com/Genki-jp0/Akousma) link in the About dialog: it opens your repository; Settings > Apps > Installed apps >
+Akousma: the support/"About" link is your repository.
+
+CHANGES: crash on launch (qtbase-disable-openssl-hash.patch)
+Cause: Qt 6.12 implements QCryptographicHash with OpenSSL when it is linked, and every hash loads
+and unloads OpenSSL's "default" provider. With OpenSSL 4.0.3 the unload frees method-store entries
+while the main thread's qtsparkle update check is walking them (OSSL_DECODER_do_all_provided):
+a use-after-free, so strawberry.exe crashes at startup, sometimes.
+Fix: patches\qtbase-disable-openssl-hash.patch turns Qt's openssl-hash feature off by default
+(AUTODETECT OFF in src/corelib/configure.cmake). Qt then uses its built-in hashes; TLS still uses
+OpenSSL. It goes to qtbase automatically, so the next run rebuilds qtbase from a clean copy (slow),
+relinks strawberry and re-creates StrawberrySetup. Same command as before.
+Check that it worked:
+  1. The qtbase configure summary in the log shows: OpenSSL based cryptographic hash ... no
+  2. In a VS developer prompt, in the output bin folder:
+       dumpbin /imports Qt6Core.dll | findstr OSSL_PROVIDER
+     prints nothing.
+  3. Admin prompt: gflags /p /enable strawberry.exe /full   then start and close Strawberry 20+
+     times (no crash), then: gflags /p /disable strawberry.exe   (PageHeap makes it slow; turn it off).
+
+Strawberry 1.2.31, with your paths:
+.\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\strawberry\project -DownloadsPath E:\strawberry\downloads -SrcPath E:\strawberry\src -BuildPath C:\strawberry\build -LogPath E:\data\projects\strawberry\build_orig.log
+
+Strawberry master @ 82309fc: the same with -StrawberryRef 82309fc.
+Without the playlist lock: add -NoPlaylistLock.
+
+Change detection
+Each package's build is now stamped (C:\strawberry\build\.stamps) with what went into it: the version
+(download URL) or git commit, the hashes of its patches (yours and the build tools' own), build type/arch
+and its build recipe. At the start the build prints one line per package, skip / adopt / build / rebuild,
+with the reason (e.g. "patch changed: strawberry-playlist-lock.patch", "glib version changed
+glib-2.86.0.tar.xz -> glib-2.86.1.tar.xz", "strawberry commit changed 1a2b3c4 -> 5d6e7f8").
+- Strawberry: the build tree is reset to the -StrawberryRef commit, all patches are applied again (so a
+  removed or edited patch is undone too), and the existing build folder is reused: only files whose
+  content changed are recompiled, then it is relinked.
+- Other packages (dependencies) whose stamp changed are rebuilt from a clean copy. A header-only one
+  (utfcpp, sparsehash, boost) also rebuilds what includes it. After any rebuild strawberry is relinked
+  and StrawberrySetup is re-created.
+- First run on your existing tree: nothing is rebuilt from scratch. Existing packages are adopted
+  (stamped as they are); strawberry is rebuilt incrementally once, which adds the playlist lock.
+  gst-plugins-good is adopted if it was already built with the flacparse patch (otherwise rebuilt once).
+- If a build fails, the packages that didn't finish are rebuilt on the next run.
+- Adding, removing or editing a file in patches rebuilds the package it belongs to.
+Options:
+  -List                  show what would be rebuilt and why, build nothing
+  -ForceRebuild a,b      rebuild these anyway (e.g. -ForceRebuild gst-plugins-good; strawberry = full rebuild)
+  -NoChangeDetection     old behaviour: only build what has no output
+  -RebuildDependents     also rebuild packages that link a rebuilt one (e.g. after a DLL rename)
+  -NoAutoPatches         don't apply the patches folder (only -StrawberryPatch/-GstGoodPatch and the lock)
+
+More patches: drop them into the patches folder (*.patch or *.diff, -p1, git diff or diff -u). Any name goes to
+strawberry; a name starting with a package name (gst-plugins-good-*.patch or gstreamer-*.patch, gst-plugins-bad-*.patch,
+glib-networking-*.patch, qtbase-*.patch, ...) or patches\<package>\*.patch goes to that package. Per package they are
+applied in name order (numbers sort naturally); a leading number (e.g. 10-x.patch) puts one first.
+
+The lock can also be switched off in Strawberry itself: Settings > Behavior > Playlist >
+"Enable playlist locking (show lock button)" (on by default). When it is off, the lock button
+and the lock icons on the tabs are hidden and locked playlists can be changed again, but they
+stay marked as locked, so turning it back on locks them again. It applies as soon as the
+settings are saved, no restart needed.
+
+Old downloads: C:\data\projects\strawberry\msvc_\downloads is now copied only once, and only the
+downloaded files missing in E:\strawberry\downloads (no folders, nothing overwritten). The earlier run
+copied that whole folder; any git clones it brought along (folders like strawberry, qtbase, gstreamer
+in E:\strawberry\downloads) are not used with -SrcPath E:\strawberry\src and can be deleted.
+
+Everything goes to C: by default, wherever this folder is:
+  C:\data\projects\strawberry\...  (build tools, downloads, build tree, build.log)
+  C:\strawberry_msvc_x86_64_release  (output)
+  C:\temp, C:\cache\pip, C:\cargo, C:\rustup
+To build on another drive, add e.g. -WorkRoot E:\
+Each run puts PATH, TEMP and the other environment variables it changes back when it finishes.
+
+glib-networking is pinned to the commit the build tools' glib-networking.patch was made for
+(2616c9e for -MsvcToolsRef 4c8c65c and 1dfe51d, e23c430 for 34e85f6).
