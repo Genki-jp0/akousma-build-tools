@@ -1,5 +1,17 @@
 # :hammer_and_wrench: Strawberry MSVC Build Tools
 
+## Akousma
+
+This fork holds the build tools for [Akousma](https://github.com/Genki-jp0/Akousma). It is upstream
+strawberry-msvc-build-tools at 4c8c65c with:
+
+* `StrawberryMSVCBuild.ps1`: the patched build script (parallel package builds, per-package change detection, local patches).
+* `akousma/Build-Strawberry.ps1`: the build wrapper. Run it from the `akousma` folder in PowerShell 7.
+* `akousma/patches/`: the Akousma patches for strawberry, qtbase and gst-plugins-good, applied automatically.
+* `akousma/BUILD.txt`: how to build, the patches and the options.
+
+The upstream instructions below still describe the tools to install.
+
 This repository contains tools to build all the Strawberry Music Player dependencies with Visual Studio 2022 or 2026.
 
 Instructions here are provided as-is, primarily intended for developers working on Strawberry for Windows.
