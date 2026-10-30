@@ -1,13 +1,12 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-  Strawberry MSVC build wrapper. Unlike Build-Strawberry_34e85f6.ps1 / Build-Strawberry_latest.ps1
-  (one hardcoded upstream strawberry-msvc-build-tools commit each), this single script takes the
-  build-tools ref as a parameter (-MsvcToolsRef) and picks the matching patched script + pristine
-  hash automatically for known refs, or lets you supply them yourself for a new/untested ref.
+  Strawberry MSVC build wrapper for the Akousma build tools. This repository is upstream
+  strawberry-msvc-build-tools @ 4c8c65c with the patched StrawberryMSVCBuild.ps1 (custom parameters +
+  package-level parallelism) already committed, so this script builds with the repository it is in
+  (the folder above akousma\): no clone of upstream, no checkout, no script swap.
 
-  Swaps in a pre-patched StrawberryMSVCBuild.ps1 (custom parameters + package-level parallelism)
-  instead of patching the upstream script line by line. Every path is a parameter; defaults hang off
+  Every path is a parameter; defaults hang off
   a work root, C:\ unless -WorkRoot is passed (the same C:\data\projects\strawberry\... and
   C:\strawberry_msvc_<arch>_<build type> folders upstream's script uses), wherever this script is run from.
 
@@ -23,9 +22,7 @@
 .DESCRIPTION
     1. Redirects TEMP / pip cache / cargo / rustup
     2. Copies existing .cargo / .rustup to the new locations (once)
-    3. Clones strawberry-msvc-build-tools, checks out -MsvcToolsRef, verifies the upstream
-       StrawberryMSVCBuild.ps1 is the exact file the patch was made for (skipped if no known hash
-       and -Force is set), then swaps in the matching patched script
+    3. Uses the build tools repository this script is in (its StrawberryMSVCBuild.ps1 is already the patched one)
     4. Downloads jom.exe if missing
     5. Copies missing downloaded archives from the old downloads folder (once), kills leftover compilers, removes partial
        OpenSSL trees
@@ -41,10 +38,9 @@
   Requires PowerShell 7 (pwsh): the patched script starts pwsh child processes for parallel builds.
 
 .PARAMETER StrawberryRef      Strawberry tag/branch/commit to build (any ref -- e.g. 1.2.31, 19d8c0b, master). Empty = strawberry master.
-.PARAMETER MsvcToolsRef       strawberry-msvc-build-tools tag/branch/commit to check out (any ref). Known refs
-                              (currently 34e85f6, 1dfe51d, 4c8c65c) auto-select the matching patched script and pristine
-                              hash below; for anything else, pass -PatchedScript yourself (and ideally
-                              -PristineSha256, or -Force to skip the verification).
+.PARAMETER MsvcToolsRef       Not needed any more; kept so old command lines still work. This repository is based on upstream
+                              strawberry-msvc-build-tools 4c8c65c, so only 4c8c65c (or a longer form of that commit) is accepted.
+                              To move to a newer upstream commit, merge or rebase it into this repository (see akousma\BUILD.txt).
 .PARAMETER Jobs               Parallel jobs in total (split between parallel packages).
 .PARAMETER ParallelPackages   Packages built at the same time. 0 = auto (half the jobs, min 2). 1 = sequential like upstream.
 .PARAMETER Only / -Skip       Build only / never build these components (when they need building).
@@ -59,8 +55,8 @@
                               (e.g. after a version bump that renames a DLL). Without it, only dependents of header-only packages
                               are rebuilt; strawberry is relinked and StrawberrySetup re-created after any rebuild either way.
 .PARAMETER VersionOverrides   e.g. -VersionOverrides @{ qt_version = '6.11.2' }
-.PARAMETER GitRefs            e.g. -GitRefs @{ 'gst-plugins-rs' = '0.15.3' }. glib-networking is pinned automatically for known
-                              -MsvcToolsRef values (the commit their glib-networking.patch applies to); an entry here wins.
+.PARAMETER GitRefs            e.g. -GitRefs @{ 'gst-plugins-rs' = '0.15.3' }. glib-networking is pinned automatically to the
+                              commit this repository's patches\glib-networking.patch applies to; an entry here wins.
 .PARAMETER VersionsFile       Alternative StrawberryPackageVersions.txt.
 .PARAMETER CiVersionsFile     strawberry-msvc-dependencies build.yaml (path/URL) whose *_version values win.
 .PARAMETER CiVersionsRef      Fetch strawberry-msvc-dependencies' build.yaml automatically (ignored when -CiVersionsFile is given).
@@ -68,9 +64,6 @@
                                          set $env:GITHUB_TOKEN if you hit the unauthenticated rate limit),
                               'master' / a tag / a commit = that exact revision.
                               Empty = no CI file. The download is cached in <TempPath> and passed on as -CiVersionsFile.
-.PARAMETER PatchedScript      Patched build script to swap in. Empty = derived from -MsvcToolsRef (patched\StrawberryMSVCBuild.<ref>.ps1 next to this script) for known refs; required for unknown refs.
-.PARAMETER PristineSha256     Expected sha256 of the upstream StrawberryMSVCBuild.ps1 at -MsvcToolsRef. Empty = looked up for known refs; for unknown refs, pass this or use -Force to skip verification.
-.PARAMETER Force              Swap even if the upstream file doesn't match the expected hash (or no hash is known for -MsvcToolsRef at all).
 .PARAMETER SkipBuild          Do everything except the build.
 .PARAMETER RemoveOldCDrive    Delete the old C: build tree, prefix and downloads.
 .PARAMETER WorkRoot          Drive/folder everything is built under. Empty = C:\ (fixed: it does not follow the drive this
@@ -109,11 +102,12 @@
            PipCachePath, CargoHome, RustupHome, LogPath, LogDir
                               New locations. Empty = <work root>\data\projects\strawberry, ...
                               where <work root> is -WorkRoot, else C:\. With no path parameters the defaults are:
-                                ProjectRoot   C:\data\projects\strawberry   (build tools clone: ...\strawberry\strawberry-msvc)
+                                ProjectRoot   C:\data\projects\strawberry   (build.log; the build tools are this repository)
                                 DownloadsPath C:\data\projects\strawberry\msvc_\downloads   (SrcPath: same)
                                 BuildPath     C:\data\projects\strawberry\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
                                 PrefixPath    C:\strawberry_msvc_<arch>_<build type>   (e.g. C:\strawberry_msvc_x86_64_release)
-                                JomDir        C:\data\projects\strawberry\strawberry-msvc\tools\jom   (only when jom.exe is not on PATH)
+                                JomDir        C:\data\projects\strawberry\strawberry-msvc\tools\jom   (only when jom.exe is not on PATH; where the
+                                              old wrapper's build tools clone kept it, so an existing jom.exe is reused)
                                 TempPath C:\temp, PipCachePath C:\cache\pip, CargoHome C:\cargo, RustupHome C:\rustup,
                                 LogPath C:\data\projects\strawberry\build.log
 .PARAMETER OldCargoHome, OldRustupHome, OldDownloads, OldBuildPath, OldPrefixPath
@@ -122,22 +116,18 @@
 .PARAMETER GitBinPath         Git's bin folder, added to PATH. Empty = found through git.exe on PATH.
 
 .EXAMPLE
+  # From the akousma folder of this repository.
   # Everything in patches\ (custom framerate, playlist lock, flacparse fix) is applied automatically; everything goes to C:
-  .\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31
+  .\Build-Strawberry.ps1 -StrawberryRef 1.2.31
   # Same without the playlist lock, built on E: instead of C:
-  .\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -NoPlaylistLock -WorkRoot E:\
+  .\Build-Strawberry.ps1 -StrawberryRef 1.2.31 -NoPlaylistLock -WorkRoot E:\
   # Only the custom framerate patch for strawberry (no discovery for strawberry; the lock is still appended unless -NoPlaylistLock)
-  .\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -StrawberryPatch .\patches\strawberry-custom-framerate.patch
+  .\Build-Strawberry.ps1 -StrawberryRef 1.2.31 -StrawberryPatch .\patches\strawberry-custom-framerate.patch
   # What would be rebuilt and why, without building anything
-  .\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -List
+  .\Build-Strawberry.ps1 -StrawberryRef 1.2.31 -List
   # Rebuild gst-plugins-good from scratch even though nothing changed (strawberry is relinked, StrawberrySetup re-created)
-  .\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -ForceRebuild gst-plugins-good
-  .\Build-Strawberry.ps1 -MsvcToolsRef 34e85f6 -ParallelPackages 2 -Jobs 12 -List
-  # A build-tools ref this script doesn't know yet -- supply the patched script (and, ideally, the
-  # pristine hash of the upstream file it was patched from) yourself:
-  .\Build-Strawberry.ps1 -MsvcToolsRef abcdef1 -PatchedScript .\patched\StrawberryMSVCBuild.abcdef1.ps1 -PristineSha256 <sha256>
-  # Or skip verification entirely for a ref you trust / are actively developing the patch against:
-  .\Build-Strawberry.ps1 -MsvcToolsRef abcdef1 -PatchedScript .\patched\StrawberryMSVCBuild.abcdef1.ps1 -Force
+  .\Build-Strawberry.ps1 -StrawberryRef 1.2.31 -ForceRebuild gst-plugins-good
+  .\Build-Strawberry.ps1 -ParallelPackages 2 -Jobs 12 -List
 #>
 
 [CmdletBinding()]
@@ -146,7 +136,7 @@ param(
   [string]$BuildType        = "release",
   [string]$Arch              = "x86_64",
   [string]$StrawberryRef    = "1.2.30",
-  [string]$MsvcToolsRef     = "1dfe51d",
+  [string]$MsvcToolsRef     = "4c8c65c",
   [int]$Jobs                = [Environment]::ProcessorCount,
   [int]$ParallelPackages    = 0,
   [string[]]$Only           = @(),
@@ -160,9 +150,6 @@ param(
   [string]$VersionsFile     = "",
   [string]$CiVersionsFile   = "",
   [string]$CiVersionsRef    = "",
-  [string]$PatchedScript    = "",
-  [string]$PristineSha256   = "",
-  [switch]$Force,
   [switch]$SkipBuild,
   [switch]$RemoveOldCDrive,
 
@@ -348,60 +335,27 @@ function Write-PatchSummary {
 }
 Write-PatchSummary
 # The other file/folder parameters are only made absolute here; they are checked (or created) where they are used.
-foreach ($name in 'PatchedScript', 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot', 'DownloadsPath', 'SrcPath',
+foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot', 'DownloadsPath', 'SrcPath',
                   'BuildPath', 'PrefixPath', 'JomDir', 'TempPath', 'PipCachePath', 'CargoHome', 'RustupHome', 'LogPath', 'LogDir',
                   'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath', 'OldPrefixPath', 'GitBinPath') {
   Set-Variable -Name $name -Value (Resolve-UserPath (Get-Variable -Name $name -ValueOnly))
 }
 
 # ---------------------------------------------------------------------
-# Known strawberry-msvc-build-tools revisions this script has a ready-made patch for.
-# Add an entry here whenever a new patched\StrawberryMSVCBuild.<ref>.ps1 is cut, instead of
-# cloning the whole wrapper script again. For a ref not listed, pass -PatchedScript yourself
-# (and -PristineSha256, or -Force to skip the hash check).
-# GlibNetworking: the glib-networking commit that ref's patches\glib-networking.patch was written against (see the pin in step 6).
+# The build tools are this repository: upstream strawberry-msvc-build-tools @ 4c8c65c with the patched
+# StrawberryMSVCBuild.ps1 committed, so nothing is cloned or swapped. -MsvcToolsRef is only checked, for old command lines.
+# GlibNetworkingRef: the glib-networking commit this repository's patches\glib-networking.patch was written against
+# (see the pin in step 6).
 # ---------------------------------------------------------------------
-$KnownMsvcTools = [ordered]@{
-  "34e85f6" = @{
-    Patched = "StrawberryMSVCBuild.34e85f6.ps1"
-    Sha256  = "4dccfa38bc1bd23871fb3f78f5839477105ef08186bd46fb200aeb627b8c11a3"
-    GlibNetworking = "e23c430a41a47884064449c76a7927eafdba0d08"   # 2.90.alpha; patch from build-tools 1bb9723 (2026-07-28)
-    Note    = "pinned build for Strawberry 1.2.30, upstream 2026-09-05"
-  }
-  "1dfe51d" = @{
-    Patched = "StrawberryMSVCBuild.1dfe51d.ps1"
-    Sha256  = "2b86d826cea2e72e0a038e9f12744e90a1e1fbb1d6dba1bab75c5d32613656cb"
-    GlibNetworking = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
-    Note    = "latest upstream master as of 2026-09-27; adds uchardet build support"
-  }
-  "4c8c65c" = @{
-    Patched = "StrawberryMSVCBuild.4c8c65c.ps1"
-    Sha256  = "484a3fe84f69355a1ae8fb8ec7d6cc4505bdadb007cd6e696a43b8d562e0142d"
-    GlibNetworking = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # same glib-networking.patch as 1dfe51d
-    Note    = "upstream 2026-10-04 'Update dependencies': faac 2.2 (faac-2.dll), faac2 patch part 2, faad2 2.11.4, Qt 6.12.0"
-  }
+$MsvcToolsBase     = "4c8c65c6b1b2c7f2fb0fa6fc04151962d9ed0145"   # upstream 2026-10-04 'Update dependencies'
+$GlibNetworkingRef = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
+if ($MsvcToolsRef -and -not $MsvcToolsBase.StartsWith($MsvcToolsRef.Trim().ToLowerInvariant())) {
+  throw "-MsvcToolsRef '$MsvcToolsRef': this repository is based on strawberry-msvc-build-tools $($MsvcToolsBase.Substring(0, 7)) and always " +
+        "builds with that (the patched StrawberryMSVCBuild.ps1 is committed here). Leave -MsvcToolsRef out. To use a newer " +
+        "upstream commit, merge it into this repository first (see akousma\BUILD.txt)."
 }
-$GlibNetworkingRef = if ($KnownMsvcTools.Contains($MsvcToolsRef)) { $KnownMsvcTools[$MsvcToolsRef].GlibNetworking } else { "" }
+$MsvcToolsRef = $MsvcToolsBase.Substring(0, 7)
 $GitRefs = $GitRefs.Clone()   # pins are added below; don't change the caller's hashtable
-
-if (-not $PatchedScript) {
-  if ($KnownMsvcTools.Contains($MsvcToolsRef)) {
-    $PatchedScript = Join-Path $PSScriptRoot "patched\$($KnownMsvcTools[$MsvcToolsRef].Patched)"
-  }
-  else {
-    throw "Unknown -MsvcToolsRef '$MsvcToolsRef' (known: $($KnownMsvcTools.Keys -join ', ')). " +
-          "Pass -PatchedScript pointing at the patched build script for this ref " +
-          "(and ideally -PristineSha256, or -Force to skip the upstream-file verification)."
-  }
-}
-if (-not $PristineSha256 -and $KnownMsvcTools.Contains($MsvcToolsRef)) {
-  $PristineSha256 = $KnownMsvcTools[$MsvcToolsRef].Sha256
-}
-if (-not $PristineSha256 -and -not $Force) {
-  throw "No known pristine sha256 for -MsvcToolsRef '$MsvcToolsRef'. Pass -PristineSha256 explicitly, " +
-        "or -Force to build without verifying the upstream StrawberryMSVCBuild.ps1 first " +
-        "(only do this if you trust this ref and that -PatchedScript is actually compatible with it)."
-}
 
 $ErrorActionPreference = "Stop"
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Magenta }
@@ -409,11 +363,6 @@ function Copy-Tree($src, $dst) {
   robocopy $src $dst /E /NFL /NDL /NJH /NJS | Out-Null   # exit codes 0-7 = success
   if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed ($LASTEXITCODE)" }
   $global:LASTEXITCODE = 0
-}
-function Get-NormalizedHash($Path) {
-  $text  = [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
-  $bytes = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($text))
-  return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 }
 
 # ---------------------------------------------------------------------
@@ -511,42 +460,22 @@ if ((Test-Path $OldRustupHome) -and -not (Test-SamePath $OldRustupHome $RustupHo
 $env:CARGO_HOME = $CargoHome; $env:RUSTUP_HOME = $RustupHome
 
 # ---------------------------------------------------------------------
-# 3. Build tools repo at -MsvcToolsRef, then swap in the patched build script
+# 3. Build tools: this repository (the folder above akousma\), patched StrawberryMSVCBuild.ps1 included
 # ---------------------------------------------------------------------
-Write-Step "Cloning / checking out strawberry-msvc-build-tools @ $MsvcToolsRef"
-Set-Location $ProjectRoot
-if (!(Test-Path strawberry-msvc)) {
-  git clone https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools.git strawberry-msvc
-  if ($LASTEXITCODE -ne 0) { throw "git clone of strawberry-msvc-build-tools failed" }
-}
-$RepoPath   = Join-Path $ProjectRoot "strawberry-msvc"
+$RepoPath   = Split-Path -Parent $PSScriptRoot
 $ScriptPath = Join-Path $RepoPath "StrawberryMSVCBuild.ps1"
-
-git -C $RepoPath fetch --tags origin
-if ($LASTEXITCODE -ne 0) { Write-Warning "git fetch failed; continuing with the local repository." }
-# A previous run swapped this file; restore upstream's copy so the checkout cannot be blocked.
-git -C $RepoPath checkout -- StrawberryMSVCBuild.ps1
-git -C $RepoPath checkout $MsvcToolsRef
-if ($LASTEXITCODE -ne 0) { throw "git checkout '$MsvcToolsRef' failed in $RepoPath" }
-Write-Host ("strawberry-msvc is at " + (git -C $RepoPath rev-parse --short HEAD)) -ForegroundColor Cyan
-if (-not (Test-Path $ScriptPath)) { throw "StrawberryMSVCBuild.ps1 not found in $RepoPath" }
-if (-not (Test-Path $PatchedScript)) { throw "Patched script not found: $PatchedScript" }
-
-Write-Step "Swapping in $(Split-Path $PatchedScript -Leaf)"
-$actual = Get-NormalizedHash $ScriptPath
-if ($PristineSha256) {
-  if ($actual -ne $PristineSha256) {
-    $msg = "Upstream StrawberryMSVCBuild.ps1 does not match the file this patch was made for ($MsvcToolsRef).`n  expected sha256 $PristineSha256`n  found    sha256 $actual"
-    if ($Force) { Write-Warning $msg } else { throw "$msg`nRe-generate the patch, or use -Force to swap anyway." }
-  }
+Write-Step "Using the build tools in $RepoPath"
+if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+  throw "StrawberryMSVCBuild.ps1 not found in $RepoPath. Run this script from the akousma folder of the Akousma build tools repository."
 }
-else {
-  Write-Warning "No known pristine hash for '$MsvcToolsRef'; skipping verification because -Force was set.`n  found sha256 $actual (record this as the pristine hash for '$MsvcToolsRef' once the patch is confirmed good)"
+# Only the patched script has -package_patches; upstream's own would ignore the local patches and the parallel build options.
+if (-not (Select-String -LiteralPath $ScriptPath -Pattern '\$package_patches\b' -Quiet)) {
+  throw "$ScriptPath is not the patched build script (no -package_patches parameter). Restore it with: git -C `"$RepoPath`" checkout -- StrawberryMSVCBuild.ps1"
 }
-Copy-Item $PatchedScript $ScriptPath -Force
-# Copy-Item carries over the downloaded-file (Mark of the Web) flag, which trips the execution policy.
-Unblock-File -LiteralPath $ScriptPath -ErrorAction SilentlyContinue
-Write-Host "Swapped: $ScriptPath"
+# A zip download carries the downloaded-file (Mark of the Web) flag, which trips the execution policy.
+foreach ($f in $ScriptPath, (Join-Path $RepoPath "CopyDLLDependencies.ps1")) { Unblock-File -LiteralPath $f -ErrorAction SilentlyContinue }
+$repoHead = if (Test-Path -LiteralPath (Join-Path $RepoPath ".git")) { git -C $RepoPath rev-parse --short HEAD 2>$null } else { $null }
+Write-Host ("Build tools: strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes" + $(if ($repoHead) { ", repository at $repoHead" } else { "" })) -ForegroundColor Cyan
 
 # ---------------------------------------------------------------------
 # 4. jom (parallel nmake replacement)
@@ -648,7 +577,7 @@ if (-not $CiVersionsFile -and $CiVersionsRef) {
   Write-Host "Saved: $CiVersionsFile"
 }
 
-Write-Step "Building ($BuildType / $Arch, $Jobs jobs, $(if ($ParallelPackages -le 0) { "auto" } else { $ParallelPackages }) packages at once, strawberry-msvc @ $MsvcToolsRef, strawberry @ $(if ($StrawberryRef) { $StrawberryRef } else { "master" })) -> $PrefixPath"
+Write-Step "Building ($BuildType / $Arch, $Jobs jobs, $(if ($ParallelPackages -le 0) { "auto" } else { $ParallelPackages }) packages at once, build tools @ $MsvcToolsRef + Akousma, strawberry @ $(if ($StrawberryRef) { $StrawberryRef } else { "master" })) -> $PrefixPath"
 $jomDirInUse = Split-Path $jomPath
 # Prepend the build folders without duplicates: an entry already on Path (e.g. left by an older run of this script in this
 # window) is moved to the front rather than added again, and repeated entries are dropped (first one wins, so lookup order is kept).
@@ -696,13 +625,13 @@ if ($CiVersionsFile)         { $buildArgs.ci_versions_file = $CiVersionsFile }
 if ($VersionOverrides.Count) { $buildArgs.version_overrides = $VersionOverrides }
 # glib-networking is cloned from git (upstream's script builds master, unpinned) and patched with the build tools'
 # patches\glib-networking.patch (OpenSSL threading fixes), which upstream regenerates whenever glib-networking master moves.
-# So the right commit depends on -MsvcToolsRef, not on the strawberry version: pin the commit each known ref's patch was
-# written against (the patch's 'index' blob hashes match it, and it applies with no offset or fuzz):
-#   34e85f6           -> e23c430 (2.90.alpha)
-#   1dfe51d, 4c8c65c  -> 2616c9e. The older f54d8d6 pin rejected a gtlsconnection-openssl.c hunk of this patch (offset -23 lines).
-# The map wins over a 40-char glib_networking_version in the CI build.yaml: that one goes with the patch CI had at the time,
-# which may not be this ref's (for strawberry 1.2.31, CI's dec75a1 has the same patched files as 2616c9e anyway).
-# For a ref not in the map, the inner script uses the CI pin if there is one, else glib-networking master, like upstream.
+# So the right commit depends on the build tools commit, not on the strawberry version: pin the commit this repository's
+# patch was written against ($GlibNetworkingRef above; the patch's 'index' blob hashes match it, and it applies with no offset
+# or fuzz). For upstream 4c8c65c (and 1dfe51d) that is 2616c9e; 34e85f6 needed e23c430 (2.90.alpha). The older f54d8d6 pin
+# rejected a gtlsconnection-openssl.c hunk of this patch (offset -23 lines). When you merge a newer upstream commit that
+# changes patches\glib-networking.patch, update $GlibNetworkingRef to match.
+# The pin wins over a 40-char glib_networking_version in the CI build.yaml: that one goes with the patch CI had at the time,
+# which may not be this repository's (for strawberry 1.2.31, CI's dec75a1 has the same patched files as 2616c9e anyway).
 # -GitRefs @{ 'glib-networking' = '<commit>' } overrides all of this.
 $ciGlibNet = if ($CiVersionsFile -and (Test-Path -LiteralPath $CiVersionsFile) -and
   ((Get-Content -Raw -LiteralPath $CiVersionsFile) -match "(?m)^\s+glib_networking_version:\s*'?([0-9a-f]{40})\b")) { $Matches[1] } else { "" }

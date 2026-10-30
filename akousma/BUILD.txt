@@ -1,9 +1,23 @@
+NOTE: this is the Akousma build tools repository, not the old zip. It is upstream
+strawberry-msvc-build-tools @ 4c8c65c (2026-10-04 "Update dependencies") plus:
+  StrawberryMSVCBuild.ps1          the patched build script, committed in place of upstream's (the old wrapper
+                                   swapped patched\StrawberryMSVCBuild.4c8c65c.ps1 in; there is no patched\ folder now)
+  akousma\Build-Strawberry.ps1     the wrapper; it builds with this repository: no clone, no checkout, no swap
+  akousma\patches\                 your local patches (strawberry-*, qtbase-*, gstreamer-*), applied automatically
+  akousma\BUILD.txt                this file
+patches\ at the top of the repository is upstream's own (glib-networking.patch, qtbase-qwindowswindow.patch, ...): the
+build script applies those itself. Put your patches in akousma\patches, never there.
+Run everything below from the akousma folder:  cd <repository>\akousma  then  .\Build-Strawberry.ps1 ...
+-MsvcToolsRef is not needed any more (4c8c65c is still accepted, anything else stops with a message). To move to a
+newer upstream build tools commit: git fetch upstream; git merge upstream/master (or rebase), fix conflicts in
+StrawberryMSVCBuild.ps1, and update $GlibNetworkingRef in Build-Strawberry.ps1 if patches\glib-networking.patch changed.
+Earlier patched scripts for upstream 34e85f6 and 1dfe51d are not in this repository (they are in the old zip).
+
 Akousma build (Strawberry with playlist-lock, album art, moodbar, sidebar background, window backdrop
 and branding patches, and crash-on-launch fix)
 
-IMPORTANT: extract the WHOLE zip into the folder you run Build-Strawberry.ps1 from, replacing the old files
-(Build-Strawberry.ps1, patched\ and patches\). The script only applies the patches that are in the patches folder next
-to it: a patch that isn't there is simply not built in (that is how the Tabbar background group goes missing).
+The script only applies the patches that are in the patches folder next to it (akousma\patches): a patch that isn't
+there is simply not built in (that is how the Tabbar background group goes missing).
 
 Run from this folder in PowerShell 7 (pwsh). Every *.patch and *.diff file in the patches folder is applied
 automatically, whatever its name, so -StrawberryPatch / -GstGoodPatch are not needed:
@@ -175,7 +189,7 @@ Check that it worked:
      times (no crash), then: gflags /p /disable strawberry.exe   (PageHeap makes it slow; turn it off).
 
 Strawberry 1.2.31, with your paths:
-.\Build-Strawberry.ps1 -MsvcToolsRef 4c8c65c -StrawberryRef 1.2.31 -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\strawberry\project -DownloadsPath E:\strawberry\downloads -SrcPath E:\strawberry\src -BuildPath C:\strawberry\build -LogPath E:\data\projects\strawberry\build_orig.log
+.\Build-Strawberry.ps1 -StrawberryRef 1.2.31 -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\strawberry\project -DownloadsPath E:\strawberry\downloads -SrcPath E:\strawberry\src -BuildPath C:\strawberry\build -LogPath E:\data\projects\strawberry\build_orig.log
 
 Strawberry master @ 82309fc: the same with -StrawberryRef 82309fc.
 Without the playlist lock: add -NoPlaylistLock.
@@ -221,11 +235,11 @@ copied that whole folder; any git clones it brought along (folders like strawber
 in E:\strawberry\downloads) are not used with -SrcPath E:\strawberry\src and can be deleted.
 
 Everything goes to C: by default, wherever this folder is:
-  C:\data\projects\strawberry\...  (build tools, downloads, build tree, build.log)
+  C:\data\projects\strawberry\...  (downloads, build tree, build.log, jom)
   C:\strawberry_msvc_x86_64_release  (output)
   C:\temp, C:\cache\pip, C:\cargo, C:\rustup
 To build on another drive, add e.g. -WorkRoot E:\
 Each run puts PATH, TEMP and the other environment variables it changes back when it finishes.
 
 glib-networking is pinned to the commit the build tools' glib-networking.patch was made for
-(2616c9e for -MsvcToolsRef 4c8c65c and 1dfe51d, e23c430 for 34e85f6).
+(2616c9e for upstream 4c8c65c, the commit this repository is based on; e23c430 was for 34e85f6).
