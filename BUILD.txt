@@ -69,6 +69,10 @@ Akousma source:
   -EnableQtSparkle        build with the QtSparkle update check. OFF by default: QtSparkle's only feed is upstream
                           Strawberry's (https://www.strawberrymusicplayer.org/sparkle-windows-msvc-x64), which offers
                           Strawberry releases, not Akousma ones. Tools > Check for updates is not shown without it.
+  -IncludeGitCommit       show Akousma's own short git commit with the version: "Akousma 1.0.0 (git abc1234)",
+                          installer AkousmaSetup-1.0.0+gitabc1234-msvc-x64.exe. OFF by default: release builds say
+                          "Akousma 1.0.0" and "Based on Strawberry 1.2.31 (82309fc)" only. (CMake:
+                          -DAKOUSMA_INCLUDE_GIT_COMMIT=ON.)
 
 Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
   -StrawberryRef          use -AkousmaRef (or -AkousmaSource). Upstream Strawberry is not built any more.

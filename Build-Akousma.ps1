@@ -55,6 +55,9 @@
                              It is built out of tree, in <BuildPath>\akousma\build; the checkout itself is not changed.
 .PARAMETER EnableQtSparkle   Build Akousma with the QtSparkle update check. Off by default: the only QtSparkle feed is
                              upstream Strawberry's, which offers Strawberry releases, not Akousma ones.
+.PARAMETER IncludeGitCommit  Show Akousma's own short git commit with the version ("Akousma 1.0.0 (git abc1234)", installer
+                             AkousmaSetup-1.0.0+gitabc1234-...). Off by default: release builds say "Akousma 1.0.0" only.
+                             Passed to CMake as -DAKOUSMA_INCLUDE_GIT_COMMIT=ON.
 .PARAMETER BuildType          release (default) or debug.
 .PARAMETER Arch               x86_64 (default), x86, x64, amd64 or arm64.
 .PARAMETER Jobs               Parallel jobs in total (split between parallel packages). Default: logical processors.
@@ -133,6 +136,8 @@ param(
   [string]$AkousmaSource    = "",
   [Alias('enable_qtsparkle')]
   [switch]$EnableQtSparkle,
+  [Alias('include_git_commit')]
+  [switch]$IncludeGitCommit,
 
   # versions / options
   [Alias('build_type')]
@@ -364,6 +369,7 @@ function Write-SourceSummary {
   if ($AkousmaSource) { Write-Host "Akousma source: local checkout $AkousmaSource (built as it is, out of tree)" -ForegroundColor Cyan }
   else { Write-Host "Akousma source: $AkousmaRepo @ $AkousmaRef" -ForegroundColor Cyan }
   Write-Host "QtSparkle update check: $(if ($EnableQtSparkle) { 'on (-EnableQtSparkle)' } else { 'off' })" -ForegroundColor Cyan
+  Write-Host "Git commit in the version: $(if ($IncludeGitCommit) { 'yes (-IncludeGitCommit)' } else { 'no (release version only)' })" -ForegroundColor Cyan
 }
 Write-SourceSummary
 Write-PatchSummary
@@ -656,6 +662,7 @@ $buildArgs = @{
 if ($AkousmaSource)          { $buildArgs.AkousmaSource    = $AkousmaSource.Replace('\', '/') }
 else                         { $GitRefs['akousma']         = $AkousmaRef }
 if ($EnableQtSparkle)        { $buildArgs.EnableQtSparkle  = $true }
+if ($IncludeGitCommit)       { $buildArgs.IncludeGitCommit = $true }
 if ($PackagePatches.Count -gt 0) {
   $buildArgs.package_patches = @{}
   foreach ($pkg in $PackagePatches.Keys) {
@@ -734,6 +741,7 @@ $rebuild_dependents = $RebuildDependents
 $akousma_repo = $AkousmaRepo
 $akousma_source = if ($AkousmaSource) { $AkousmaSource.Replace('\', '/').TrimEnd('/') } else { "" }
 $enable_qtsparkle = [bool]$EnableQtSparkle
+$include_git_commit = [bool]$IncludeGitCommit
 
 # --- patched: jobs default, hashtables handed down by the parallel scheduler ---
 if ($jobs -le 0) { $jobs = [Environment]::ProcessorCount }
@@ -3893,6 +3901,8 @@ function Get-AkousmaCMakeArgs {
   $enable_win32_console = if ($build_type -eq "debug") { "ON" } else { "OFF" }
   # QtSparkle's only feed is upstream Strawberry's, which offers Strawberry releases: off unless -EnableQtSparkle.
   $qtsparkle = if ($enable_qtsparkle) { "ON" } else { "OFF" }
+  # Release builds show the plain Akousma version; -IncludeGitCommit adds Akousma's short git commit.
+  $git_commit = if ($include_git_commit) { "ON" } else { "OFF" }
   return @(
     "-DARCH=$arch",
     "-DENABLE_TRANSLATIONS=ON",
@@ -3902,7 +3912,8 @@ function Get-AkousmaCMakeArgs {
     "-DENABLE_AUDIOCD=OFF",
     "-DENABLE_MTP=OFF",
     "-DENABLE_GPOD=OFF",
-    "-DENABLE_QTSPARKLE=$qtsparkle"
+    "-DENABLE_QTSPARKLE=$qtsparkle",
+    "-DAKOUSMA_INCLUDE_GIT_COMMIT=$git_commit"
   )
 }
 
@@ -3983,7 +3994,7 @@ function Build-AkousmaSetup {
       Copy-Item "$downloads_path/vc_redist.${arch_short}.exe" "." -Force
       & makensis akousma.nsi
       if ($LASTEXITCODE -ne 0) { throw "makensis akousma.nsi failed" }
-      Write-Host "AkousmaSetup built successfully: $((Get-ChildItem -Filter 'AkousmaSetup*.exe' | Select-Object -First 1).FullName)" -ForegroundColor Green
+      Write-Host "AkousmaSetup built successfully: $((Get-ChildItem -Filter 'AkousmaSetup*.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName)" -ForegroundColor Green
     }
     finally {
       Pop-Location
@@ -4232,6 +4243,7 @@ function Invoke-ParallelQueue {
         $child_args += @("-akousma_repo", $akousma_repo)
         if ($akousma_source) { $child_args += @("-akousma_source", $akousma_source) }
         if ($enable_qtsparkle) { $child_args += @("-enable_qtsparkle") }
+        if ($include_git_commit) { $child_args += @("-include_git_commit") }
         $log = Join-Path $logs "$c.log"
         $p = Start-Process -FilePath $pwsh -ArgumentList $child_args -NoNewWindow -PassThru `
                -RedirectStandardOutput $log -RedirectStandardError "$log.err"
