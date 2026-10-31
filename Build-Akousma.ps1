@@ -4014,7 +4014,8 @@ function Build-AkousmaSetup {
       Copy-Item "$prefix_path/plugins/platforms/*.dll" "./platforms/" -Force
       Copy-Item "$prefix_path/plugins/styles/*.dll" "./styles/" -Force
       Copy-Item "$prefix_path/plugins/imageformats/*.dll" "./imageformats/" -Force
-      Copy-Item "$prefix_path/plugins/iconengines/*.dll" "./iconengines/" -Force
+      # Qt SVG's icon engine (and imageformats/qsvg) only when qtsvg is in the prefix; akousma.nsi lists them only then.
+      if (Test-Path "$prefix_path/plugins/iconengines") { Copy-Item "$prefix_path/plugins/iconengines/*.dll" "./iconengines/" -Force }
       Copy-Item "$prefix_path/plugins/tls/*.dll" "./tls/" -Force
       Copy-Item "$prefix_path/plugins/sqldrivers/*.dll" "./sqldrivers/" -Force
       Copy-Item "$prefix_path/lib/gio/modules/*.dll" "./gio-modules/" -Force
