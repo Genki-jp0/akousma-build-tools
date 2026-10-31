@@ -273,7 +273,7 @@ $KnownPackages = @(
   'libsoup', 'glib-networking', 'freetype', 'harfbuzz', 'jasper', 'tiff', 'libwebp', 'ogg', 'vorbis', 'flac', 'wavpack', 'opus',
   'opusfile', 'speex', 'mpg123', 'lame', 'fftw3', 'musepack', 'libopenmpt', 'libgme', 'fdk-aac', 'faad2', 'faac', 'utfcpp', 'taglib',
   'libbs2b', 'libebur128', 'ffmpeg', 'chromaprint', 'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
-  'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'abseil-cpp', 'protobuf', 'qtbase', 'qttools', 'qtimageformats', 'qtgrpc',
+  'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'abseil-cpp', 'protobuf', 'qtbase', 'qttools', 'qtimageformats', 'qtsvg', 'qtgrpc',
   'kdsingleapplication', 'qtsparkle', 'sparsehash', 'glew', 'libprojectm', 'tinysvcmdns', 'pe-parse', 'pe-util'
 )
 function Get-NaturalSortKey([string]$s) {
@@ -1485,6 +1485,7 @@ function GetPackageUrls {
     'qtbase' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtbase-everywhere-src-$qt_version.tar.xz"
     'qttools' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qttools-everywhere-src-$qt_version.tar.xz"
     'qtimageformats' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtimageformats-everywhere-src-$qt_version.tar.xz"
+    'qtsvg' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtsvg-everywhere-src-$qt_version.tar.xz"
     'qtgrpc' = "https://download.qt.io/official_releases/qt/$qt_version_short/$qt_version/submodules/qtgrpc-everywhere-src-$qt_version.tar.xz"
     'kdsingleapplication' = "https://github.com/KDAB/KDSingleApplication/releases/download/v$kdsingleapplication_version/kdsingleapplication-$kdsingleapplication_version.tar.gz"
     'glew' = "https://downloads.sourceforge.net/project/glew/glew/$glew_version/glew-$glew_version.tgz"
@@ -3702,6 +3703,34 @@ function Build-QtImageFormats {
   }
 }
 
+# Qt SVG: the SVG image format and icon engine plugins, for the icon sets with SVG icons (Settings > Appearance > Icon set).
+function Build-QtSvg {
+  Write-Host "Building qtsvg" -ForegroundColor Yellow
+  Push-Location $build_path
+  try {
+    if ($qt_dev -eq "ON") {
+      if (-not (Test-Path "qtsvg")) {
+        RecursiveCopy "$src_path/qtsvg" "qtsvg"
+      }
+      Push-Location "qtsvg"
+    }
+    else {
+      DownloadPackage -package_name "qtsvg"
+      ExtractPackage "qtsvg-everywhere-src-$qt_version.tar.xz"
+      Push-Location "qtsvg-everywhere-src-$qt_version"
+    }
+    try {
+      CMakeBuild
+    }
+    finally {
+      Pop-Location
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Build-QtGrpc {
   Write-Host "Building qtgrpc" -ForegroundColor Yellow
   Push-Location $build_path
@@ -3974,22 +4003,24 @@ function Build-AkousmaSetup {
     New-Item -Path "AkousmaSetup" -ItemType Directory -Force | Out-Null
     Push-Location "AkousmaSetup"
     try {
-      New-Item -Path @('platforms', 'styles', 'imageformats', 'tls', 'sqldrivers', 'gio-modules', 'gstreamer-plugins') -ItemType Directory -Force
+      New-Item -Path @('platforms', 'styles', 'imageformats', 'iconengines', 'tls', 'sqldrivers', 'gio-modules', 'gstreamer-plugins', 'iconsets') -ItemType Directory -Force
       Copy-Item -Path "$build_path/akousma/build/akousma.exe", `
                       "$build_path/akousma/build/akousma.nsi", `
                       "$akousma_src_dir/COPYING", `
                       "$akousma_src_dir/dist/windows/*.ico", `
                       "$akousma_src_dir/dist/windows/*.nsh" `
                       "." -Force
+      Copy-Item "$build_path/akousma/build/iconsets/*.rcc" "./iconsets/" -Force
       Copy-Item "$prefix_path/plugins/platforms/*.dll" "./platforms/" -Force
       Copy-Item "$prefix_path/plugins/styles/*.dll" "./styles/" -Force
       Copy-Item "$prefix_path/plugins/imageformats/*.dll" "./imageformats/" -Force
+      Copy-Item "$prefix_path/plugins/iconengines/*.dll" "./iconengines/" -Force
       Copy-Item "$prefix_path/plugins/tls/*.dll" "./tls/" -Force
       Copy-Item "$prefix_path/plugins/sqldrivers/*.dll" "./sqldrivers/" -Force
       Copy-Item "$prefix_path/lib/gio/modules/*.dll" "./gio-modules/" -Force
       Copy-Item "$prefix_path/lib/gstreamer-1.0/*.dll" "./gstreamer-plugins/" -Force
       Copy-Item -Path "$prefix_path/bin/sqlite3.exe", "$prefix_path/bin/gst-*.exe" -Destination "." -Force
-      & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
+      & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./iconengines" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
       DownloadPackage -package_name "vc-redist-${arch_short}"
       Copy-Item "$downloads_path/vc_redist.${arch_short}.exe" "." -Force
       & makensis akousma.nsi
@@ -4080,6 +4111,7 @@ function Get-PackageDependencies {
     "qtbase"              = @("pkgconf") + $qt
     "qttools"             = @("qtbase")
     "qtimageformats"      = @("qtbase", "jasper", "tiff", "libwebp")
+    "qtsvg"               = @("qtbase")
     "qtgrpc"              = @("qtbase", "protobuf", "abseil-cpp")
     "kdsingleapplication" = @("qtbase")
     "qtsparkle"           = @("qtbase", "qttools")
@@ -4386,6 +4418,7 @@ function Get-PackageMarkers {
     "qtbase"              = "$prefix_path/bin/qt-configure-module.bat"
     "qttools"             = "$prefix_path/bin/lconvert.exe"
     "qtimageformats"      = "$prefix_path/plugins/imageformats/qwebp${lib_postfix}.dll"
+    "qtsvg"               = "$prefix_path/plugins/iconengines/qsvgicon${lib_postfix}.dll"
     "qtgrpc"              = "$prefix_path/lib/cmake/Qt6Protobuf/Qt6ProtobufConfig.cmake"
     "kdsingleapplication" = "$prefix_path/lib/cmake/KDSingleApplication-qt6/KDSingleApplication-qt6Config.cmake"
     "qtsparkle"           = "$prefix_path/lib/cmake/qtsparkle-qt6/qtsparkle-qt6Config.cmake"
@@ -5107,6 +5140,7 @@ try {
       "qtbase" { Build-QtBase }
       "qttools" { Build-QtTools }
       "qtimageformats" { Build-QtImageFormats }
+      "qtsvg" { Build-QtSvg }
       "qtgrpc" { Build-QtGrpc }
       "kdsingleapplication" { Build-KDSingleApplication }
       "qtsparkle" { Build-QtSparkle }
