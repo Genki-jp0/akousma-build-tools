@@ -1,0 +1,184 @@
+Building Akousma for Windows (MSVC)
+===================================
+
+This repository is upstream strawberry-msvc-build-tools @ 4c8c65c (2026-10-04 "Update dependencies") with one build
+script for Akousma:
+
+  Build-Akousma.ps1         the build script. It prepares the build environment and builds the dependencies, Akousma
+                            and the AkousmaSetup installer, in one run. It replaces both StrawberryMSVCBuild.ps1 (the
+                            patched upstream script) and the akousma\Build-Strawberry.ps1 wrapper.
+  local-patches\            patches for dependencies (qtbase-*, gstreamer-*, ...), applied automatically
+  patches\                  upstream's own patches (glib-networking.patch, qtbase-qwindowswindow.patch, ...); the script
+                            applies those itself. Put your patches in local-patches\, never here.
+  CopyDLLDependencies.ps1   upstream's helper that collects the DLLs for the installer
+  StrawberryPackageVersions.txt
+                            upstream's dependency versions (name kept: it is upstream's file)
+
+Akousma itself is NOT patched here any more. Its changes (album art, analyzer framerate, moodbar, playlist lock,
+tabbar background, window backdrop, branding, the Akousma names, the import from Strawberry / Clementine) are commits
+in the Akousma repository, and the script builds that repository:
+  - from git: -AkousmaRepo (default https://github.com/Genki-jp0/Akousma.git) at -AkousmaRef (default master), or
+  - from a local checkout: -AkousmaSource E:\src\Akousma, built as it is, uncommitted changes included.
+Commits that are not pushed yet are only in a local checkout: build those with -AkousmaSource (or push first).
+
+
+Requirements
+------------
+The tools in README.md (Git, PowerShell 7, Visual Studio 2022/2026, CMake, Meson, NASM, Strawberry Perl, Python,
+7-Zip, win_flex_bison, Rust, NSIS with the LockedList plugin). They are found on PATH, through the registry and in
+the usual install folders; add other folders (';'-separated) with $env:SMB_TOOL_PATHS. Missing tools are all
+reported together before anything is built.
+
+
+Running it
+----------
+In PowerShell 7 (pwsh), from anywhere:
+
+  .\Build-Akousma.ps1                                     Akousma master, everything on C:
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0                  a branch, tag or commit
+  .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma       a local checkout
+  .\Build-Akousma.ps1 -BuildType debug                    debug build (console window, "Akousma Debug" install folder)
+  .\Build-Akousma.ps1 -List                               what would be rebuilt and why; builds nothing
+  .\Build-Akousma.ps1 -WorkRoot E:\ -DryRun               the resolved folders, the Akousma source and the local
+                                                          patches; changes nothing (also runs on Linux / macOS)
+
+With your paths (the command line you used with Build-Strawberry.ps1, -StrawberryRef replaced by -AkousmaRef):
+
+  .\Build-Akousma.ps1 -AkousmaRef master -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\strawberry\project -DownloadsPath E:\strawberry\downloads -SrcPath E:\strawberry\src -BuildPath C:\strawberry\build -LogPath E:\data\projects\strawberry\build.log
+
+Your local checkout instead of GitHub: replace -AkousmaRef master with -AkousmaSource <path to your Akousma clone>.
+
+Output:
+  <BuildPath>\akousma\build\akousma.exe
+  <BuildPath>\AkousmaSetup\AkousmaSetup-<version>-msvc-<arch>.exe   (release; debug: AkousmaSetup-<version>-Debug-msvc-...)
+
+Each run puts PATH, TEMP and the other environment variables it changes back when it finishes.
+
+
+Parameters
+----------
+Get-Help .\Build-Akousma.ps1 -Detailed lists all of them. The old wrapper's names all still work (BuildType,
+WorkRoot, ForceRebuild, ...), and so do upstream's snake_case names (-build_type, -arch, -force_rebuild, ...).
+
+Akousma source:
+  -AkousmaRepo <url>      git URL, default https://github.com/Genki-jp0/Akousma.git. Cloned to <SrcPath>\akousma.
+  -AkousmaRef <ref>       branch, tag or commit, default master.
+  -AkousmaSource <path>   a local checkout instead of the repository. Built out of tree in <BuildPath>\akousma\build;
+                          the checkout is not changed. Its id for change detection is the commit plus a hash of
+                          the uncommitted changes, so editing a file rebuilds Akousma (incrementally).
+  -EnableQtSparkle        build with the QtSparkle update check. OFF by default: QtSparkle's only feed is upstream
+                          Strawberry's (https://www.strawberrymusicplayer.org/sparkle-windows-msvc-x64), which offers
+                          Strawberry releases, not Akousma ones. Tools > Check for updates is not shown without it.
+
+Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
+  -StrawberryRef          use -AkousmaRef (or -AkousmaSource). Upstream Strawberry is not built any more.
+  -StrawberryPatch        Akousma's changes are commits in the Akousma repository. A strawberry-*.patch or
+                          akousma-*.patch in local-patches\ stops the run with a message, so nothing is silently
+                          left out.
+  -NoPlaylistLock         the playlist lock is a commit in Akousma. It can be switched off in the app: Settings >
+                          Behavior > Playlist > "Enable playlist locking (show lock button)".
+  -MsvcToolsRef           this repository is the build tools; to move to a newer upstream: git fetch upstream;
+                          git merge upstream/master, fix conflicts in Build-Akousma.ps1, and update $GlibNetworkingRef
+                          if patches\glib-networking.patch changed.
+  -strawberry_ref, $env:SMB_STRAWBERRY_PATCH, $env:SMB_GST_GOOD_PATCH, $env:STRAWBERRY_ROOT
+                          upstream / old wrapper hand-over variables, no longer read. The work root is passed to the
+                          parallel build processes as $env:AKOUSMA_WORK_ROOT.
+
+Unchanged: -BuildType, -Arch, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebuild, -NoChangeDetection,
+-RebuildDependents, -VersionOverrides, -GitRefs, -VersionsFile, -CiVersionsFile, -CiVersionsRef, -GstGoodPatch,
+-NoAutoPatches, -SkipBuild, -RemoveOldCDrive, -WorkRoot and all the path parameters (-ProjectRoot, -MsvcRoot,
+-DownloadsPath, -SrcPath, -BuildPath, -PrefixPath, -JomDir, -TempPath, -PipCachePath, -CargoHome, -RustupHome,
+-LogPath, -LogDir, -Old*, -GitBinPath). New: -DryRun.
+-CiVersionsRef auto now picks the strawberry-msvc-dependencies build.yaml that existed when the Akousma commit being
+built was made. Package names for -Only / -Skip / -ForceRebuild: akousma (was strawberry) and akousma-setup (was
+strawberry-setup).
+
+
+Folders
+-------
+Everything goes to C: by default, wherever this folder is:
+  C:\data\projects\strawberry\...            downloads, sources (Akousma in ...\msvc_\downloads\akousma), build tree,
+                                             build.log, jom
+  C:\strawberry_msvc_<arch>_<build type>     dependency prefix
+  C:\temp, C:\cache\pip, C:\cargo, C:\rustup
+To build on another drive, add -WorkRoot E:\ (or the single path parameters).
+The dependency folders keep upstream's "strawberry" names on purpose: your existing dependency builds and upstream's
+prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages are used as they are, nothing is rebuilt because of the
+rename. Only the Akousma folders are new: <BuildPath>\akousma and <BuildPath>\AkousmaSetup.
+After the first successful run the old <BuildPath>\strawberry and <BuildPath>\StrawberrySetup folders (and
+<SrcPath>\strawberry) are not used any more and can be deleted.
+
+Old downloads: C:\data\projects\strawberry\msvc_\downloads is copied only once, and only the downloaded files missing
+in -DownloadsPath (no folders, nothing overwritten).
+
+
+Local patches (dependencies only)
+---------------------------------
+Every *.patch / *.diff in local-patches\ is applied (-p1, git diff or diff -u) to the package its name starts with:
+  qtbase-disable-openssl-hash.patch          -> qtbase            (crash-on-launch fix, see below)
+  gstreamer-flacparse-invalid-frame.patch    -> gst-plugins-good
+  gst-plugins-bad-*.patch, glib-networking-*.patch, taglib-*.patch, ...  -> that package
+  local-patches\<package>\*.patch            -> <package>
+A name that is not a package name (my-fix.diff), and strawberry-* / akousma-* patches, stop the run at the start with
+a message. Per package the patches are applied in name order (numbers sort naturally). At the top of the log the
+script lists every patch file it found and where it goes; a patch that does not apply stops the build.
+-NoAutoPatches turns local-patches\ off; -GstGoodPatch <file> replaces the gst-plugins-good ones.
+
+
+Change detection
+----------------
+Each package's build is stamped (<BuildPath>\.stamps) with what went into it: the version (download URL) or git
+commit, the hashes of its patches (local and the build tools' own), build type/arch and its build recipe. At the
+start the build prints one line per package, skip / adopt / build / rebuild, with the reason (e.g. "patch changed:
+qtbase-disable-openssl-hash.patch", "glib version changed glib-2.86.0.tar.xz -> glib-2.86.1.tar.xz", "akousma
+commit changed 1a2b3c4 -> 5d6e7f8").
+- Akousma: from git, the build copy is reset to the -AkousmaRef commit; a local checkout is built as it is. The
+  existing build folder is reused, so only what changed is recompiled, then it is relinked and AkousmaSetup is
+  re-created. The first run after switching from Build-Strawberry.ps1 builds Akousma in the new <BuildPath>\akousma
+  folder, so that one is a full Akousma build.
+- Dependencies whose stamp changed are rebuilt from a clean copy. A header-only one (utfcpp, sparsehash, boost) also
+  rebuilds what includes it. After any rebuild akousma is relinked and AkousmaSetup re-created. The dependency
+  recipes are the same as before the merge, so your existing dependency builds stay valid.
+- If a build fails, the packages that didn't finish are rebuilt on the next run.
+Options:
+  -List                  show what would be rebuilt and why, build nothing
+  -ForceRebuild a,b      rebuild these anyway (e.g. -ForceRebuild gst-plugins-good; akousma = full rebuild)
+  -NoChangeDetection     only build what has no output
+  -RebuildDependents     also rebuild packages that link a rebuilt one (e.g. after a DLL rename)
+
+
+Installing over the old build
+-----------------------------
+AkousmaSetup now installs to Program Files\Akousma (debug: Program Files\Akousma Debug) with its own uninstall
+entry. When the previous Akousma installer (the one that kept Program Files\Strawberry Music Player and the
+"Strawberry" uninstall key) is installed, the new installer removes it first, like an upgrade; upstream
+Strawberry installations are left alone.
+Akousma now keeps its settings (HKCU\Software\Akousma\Akousma) and collection (%LOCALAPPDATA%\akousma\akousma)
+separate from Strawberry's. Your old settings and collection are still in Strawberry's places: tick "Import
+settings and library from Strawberry / Clementine" on the installer's last page (ticked for you when Strawberry or
+Clementine settings exist and Akousma has none yet), or use Tools > Import from Strawberry / Clementine... in the
+app, or close Akousma and run akousma.exe --import-from=strawberry. The import backs up Akousma's own settings and
+collection first (to %LOCALAPPDATA%\akousma\akousma\import-backup-<date>-<time>).
+
+
+Crash on launch (qtbase-disable-openssl-hash.patch)
+---------------------------------------------------
+Cause: Qt 6.12 implements QCryptographicHash with OpenSSL when it is linked, and every hash loads and unloads
+OpenSSL's "default" provider. With OpenSSL 4.0.3 the unload frees method-store entries while the main thread's
+qtsparkle update check is walking them (OSSL_DECODER_do_all_provided): a use-after-free, so the app crashed at
+startup, sometimes.
+Fix: local-patches\qtbase-disable-openssl-hash.patch turns Qt's openssl-hash feature off by default (AUTODETECT
+OFF in src/corelib/configure.cmake). Qt then uses its built-in hashes; TLS still uses OpenSSL. The patch file was
+moved from akousma\patches\ to local-patches\ with the same content, so qtbase is not rebuilt because of the move.
+Check that it worked:
+  1. The qtbase configure summary in the log shows: OpenSSL based cryptographic hash ... no
+  2. In a VS developer prompt, in the output bin folder:  dumpbin /imports Qt6Core.dll | findstr OSSL_PROVIDER
+     prints nothing.
+  3. Admin prompt: gflags /p /enable akousma.exe /full, then start and close Akousma 20+ times (no crash), then:
+     gflags /p /disable akousma.exe   (PageHeap makes it slow; turn it off).
+
+
+glib-networking
+---------------
+glib-networking is pinned to the commit the build tools' patches\glib-networking.patch was made for (2616c9e for
+upstream 4c8c65c, the commit this repository is based on). -GitRefs @{ 'glib-networking' = '<commit>' } wins.

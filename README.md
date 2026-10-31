@@ -5,10 +5,19 @@
 This fork holds the build tools for [Akousma](https://github.com/Genki-jp0/Akousma). It is upstream
 strawberry-msvc-build-tools at 4c8c65c with:
 
-* `StrawberryMSVCBuild.ps1`: the patched build script (parallel package builds, per-package change detection, local patches).
-* `akousma/Build-Strawberry.ps1`: the build wrapper. Run it from the `akousma` folder in PowerShell 7.
-* `akousma/patches/`: the Akousma patches for strawberry, qtbase and gst-plugins-good, applied automatically.
-* `akousma/BUILD.txt`: how to build, the patches and the options.
+* `Build-Akousma.ps1`: one build script (it replaces `StrawberryMSVCBuild.ps1` and the old `akousma\Build-Strawberry.ps1`
+  wrapper). It prepares the build environment, builds the dependencies, builds Akousma from its git repository
+  (`-AkousmaRepo` at `-AkousmaRef`, default `master`) or from a local checkout (`-AkousmaSource`), and creates the
+  `AkousmaSetup-*.exe` installer. Parallel package builds, per-package change detection, `-List` and `-DryRun`.
+* `local-patches/`: patches for dependencies (`qtbase-*`, `gstreamer-*`, ...), applied automatically. Akousma's own
+  changes are commits in the Akousma repository, not patches.
+* `BUILD.txt`: how to build, the parameters, the local patches and change detection.
+
+```powershell
+.\Build-Akousma.ps1                                  # Akousma master, everything on C:
+.\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma     # a local checkout
+.\Build-Akousma.ps1 -WorkRoot E:\ -DryRun             # check a command line, build nothing
+```
 
 The upstream instructions below still describe the tools to install.
 
@@ -111,6 +120,8 @@ To use prebuilds, download the following `tar.xz` files from Github [strawberry-
 - For release, extract `strawberry-msvc-x86_64-release.tar.xz` to `C:\strawberry_msvc_x86_64_release`
 
 ## Build Strawberry from source including dependencies
+
+For Akousma use `Build-Akousma.ps1` (see above and `BUILD.txt`); the upstream steps below are kept for reference.
 
 - Set one debug or release in `PATH` environment variable:
     - For debug: `C:\strawberry_msvc_x86_64_debug\bin`, or:
