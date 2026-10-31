@@ -1,7 +1,7 @@
 Building Akousma for Windows (MSVC)
 ===================================
 
-This repository is upstream strawberry-msvc-build-tools @ 4c8c65c (2026-10-04 "Update dependencies") with one build
+This repository is upstream strawberry-msvc-build-tools @ d7e0c51 (2026-10-30 "Update glib_networking") with one build
 script for Akousma:
 
   Build-Akousma.ps1         the build script. It prepares the build environment and builds the dependencies, Akousma

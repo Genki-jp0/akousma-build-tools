@@ -3,7 +3,7 @@
 ## Akousma
 
 This fork holds the build tools for [Akousma](https://github.com/Genki-jp0/Akousma). It is upstream
-strawberry-msvc-build-tools at 4c8c65c with:
+strawberry-msvc-build-tools at d7e0c51 with:
 
 * `Build-Akousma.ps1`: one build script (it replaces `StrawberryMSVCBuild.ps1` and the old `akousma\Build-Strawberry.ps1`
   wrapper). It prepares the build environment, builds the dependencies, builds Akousma from its git repository

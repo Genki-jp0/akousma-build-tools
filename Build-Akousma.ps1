@@ -381,10 +381,10 @@ foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', '
 }
 
 # ---------------------------------------------------------------------
-# The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ 4c8c65c with the Akousma changes.
+# The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ d7e0c51 with the Akousma changes.
 # GlibNetworkingRef: the glib-networking commit for a versions file that doesn't pin one (see below).
 # ---------------------------------------------------------------------
-$MsvcToolsBase     = "4c8c65c6b1b2c7f2fb0fa6fc04151962d9ed0145"   # upstream 2026-10-04 'Update dependencies'
+$MsvcToolsBase     = "d7e0c51d74d31abe94efe162ad246e36c8e10705"   # upstream 2026-10-30 'Update glib_networking'
 $GlibNetworkingRef = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
 $MsvcToolsRef = $MsvcToolsBase.Substring(0, 7)
 $GitRefs = $GitRefs.Clone()   # pins are added below; don't change the caller's hashtable
@@ -689,7 +689,7 @@ if ($VersionOverrides.Count) { $buildArgs.VersionOverrides = $VersionOverrides }
 # The pin wins over a 40-char glib_networking_version in the CI build.yaml: that one goes with the patch CI had at the time,
 # which may not be this repository's. -GitRefs @{ 'glib-networking' = '<commit>' } overrides all of this.
 $pinVersionsFile = if ($VersionsFile) { $VersionsFile } else { Join-Path $PSScriptRoot "StrawberryPackageVersions.txt" }
-$GlibNetworkingRefSource = "the base of glib-networking.patch at $MsvcToolsRef"
+$GlibNetworkingRefSource = "the base of glib-networking.patch at upstream 4c8c65c"
 if ((Test-Path -LiteralPath $pinVersionsFile) -and
   ((Get-Content -Raw -LiteralPath $pinVersionsFile) -match "(?m)^\s*GLIB_NETWORKING_VERSION\s*=\s*([0-9a-f]{40})\s*$")) {
   $GlibNetworkingRef = $Matches[1]
