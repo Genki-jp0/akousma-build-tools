@@ -4003,6 +4003,9 @@ function Build-AkousmaSetup {
     New-Item -Path "AkousmaSetup" -ItemType Directory -Force | Out-Null
     Push-Location "AkousmaSetup"
     try {
+      # akousma.nsi installs every DLL staged here, so start from no DLLs: none left over from an earlier run (an older
+      # FFmpeg or ICU version, a dependency no longer needed).
+      Get-ChildItem -Path "." -Include "*.dll" -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
       New-Item -Path @('platforms', 'styles', 'imageformats', 'iconengines', 'tls', 'sqldrivers', 'gio-modules', 'gstreamer-plugins', 'iconsets') -ItemType Directory -Force
       Copy-Item -Path "$build_path/akousma/build/akousma.exe", `
                       "$build_path/akousma/build/akousma.nsi", `
@@ -4022,6 +4025,8 @@ function Build-AkousmaSetup {
       Copy-Item "$prefix_path/lib/gstreamer-1.0/*.dll" "./gstreamer-plugins/" -Force
       Copy-Item -Path "$prefix_path/bin/sqlite3.exe", "$prefix_path/bin/gst-*.exe" -Destination "." -Force
       & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./iconengines" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
+      # The uninstaller deletes exactly the DLLs staged here (akousma.nsi includes this file).
+      Get-ChildItem -Path "." -Filter "*.dll" -File | Sort-Object Name | ForEach-Object { "  Delete `"`$INSTDIR\$($_.Name)`"" } | Set-Content -Path "akousma-uninstall-dlls.nsh" -Encoding ascii
       DownloadPackage -package_name "vc-redist-${arch_short}"
       Copy-Item "$downloads_path/vc_redist.${arch_short}.exe" "." -Force
       & makensis akousma.nsi
