@@ -1,0 +1,193 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000..a4817a2
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,157 @@
++# CMake build of libcdio's main library (lib/driver: CD-ROM drives, audio CDs, CD-Text, disc images) for Windows,
++# added by akousma-build-tools (patches/libcdio-cmake.patch). Upstream builds with autotools; its Visual Studio
++# project (.vs/libcdio.vcxproj, by Pete Batard) builds a static library with the static C runtime. This builds the
++# same lib/driver sources with that project's .vs/config.h, but as a DLL with the shared C runtime like every other
++# package of the build, exports the symbols upstream's lib/driver/libcdio.sym lists (the library's API on every
++# platform) and installs the headers and libcdio.pc. Not built: libiso9660, libudf, libcdio++, the programs.
++cmake_minimum_required(VERSION 3.16)
++
++# The version, from configure.ac like .vs/set_version.ps1 does.
++file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/configure.ac" _release_num REGEX "^define\\(RELEASE_NUM, *[0-9.]+\\)")
++string(REGEX REPLACE "^define\\(RELEASE_NUM, *([0-9.]+)\\).*$" "\\1" VERSION "${_release_num}")
++file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/configure.ac" _version_num REGEX "^LIBCDIO_VERSION_NUM=[0-9]+")
++string(REGEX REPLACE "^LIBCDIO_VERSION_NUM=([0-9]+).*$" "\\1" LIBCDIO_VERSION_NUM "${_version_num}")
++if(NOT VERSION OR NOT LIBCDIO_VERSION_NUM)
++  message(FATAL_ERROR "libcdio: RELEASE_NUM / LIBCDIO_VERSION_NUM not found in configure.ac")
++endif()
++
++project(libcdio VERSION ${VERSION} LANGUAGES C)
++
++if(NOT WIN32)
++  message(FATAL_ERROR "This CMake build of libcdio is for Windows; use configure elsewhere.")
++endif()
++
++include(GNUInstallDirs)
++
++# include/cdio/version.h, generated like configure does (the release tarball has one made on the maintainer's machine).
++string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}-pc-windows" build)
++configure_file(include/cdio/version.h.in "${CMAKE_CURRENT_BINARY_DIR}/include/cdio/version.h" @ONLY)
++
++# config.h: upstream's for Visual Studio (Windows CD-ROM driver through DeviceIoControl, no iconv, no libcddb).
++configure_file(.vs/config.h "${CMAKE_CURRENT_BINARY_DIR}/config.h" COPYONLY)
++
++# lib/driver, as in .vs/libcdio.vcxproj (and lib/driver/Makefile.am without the FreeBSD CAM files). The drivers for other
++# systems compile to stubs; the Windows driver is MSWindows/win32.c with win32_ioctl.c (and the old ASPI layer).
++set(LIBCDIO_SOURCES
++  lib/driver/_cdio_generic.c
++  lib/driver/_cdio_stdio.c
++  lib/driver/_cdio_stream.c
++  lib/driver/abs_path.c
++  lib/driver/aix.c
++  lib/driver/audio.c
++  lib/driver/cd_types.c
++  lib/driver/cdio.c
++  lib/driver/cdtext.c
++  lib/driver/device.c
++  lib/driver/disc.c
++  lib/driver/ds.c
++  lib/driver/FreeBSD/freebsd.c
++  lib/driver/gnu_linux.c
++  lib/driver/image/bincue.c
++  lib/driver/image/cdrdao.c
++  lib/driver/image/nrg.c
++  lib/driver/image_common.c
++  lib/driver/logging.c
++  lib/driver/memory.c
++  lib/driver/mmc/mmc.c
++  lib/driver/mmc/mmc_hl_cmds.c
++  lib/driver/mmc/mmc_ll_cmds.c
++  lib/driver/mmc/mmc_util.c
++  lib/driver/MSWindows/aspi32.c
++  lib/driver/MSWindows/win32.c
++  lib/driver/MSWindows/win32_ioctl.c
++  lib/driver/netbsd.c
++  lib/driver/osx.c
++  lib/driver/read.c
++  lib/driver/realpath.c
++  lib/driver/sector.c
++  lib/driver/solaris.c
++  lib/driver/track.c
++  lib/driver/utf8.c
++  lib/driver/util.c
++)
++
++# The exports: the symbols in lib/driver/libcdio.sym (upstream's version script). Variables are marked DATA.
++set(LIBCDIO_DATA_SYMBOLS
++  CDIO_SECTOR_SYNC_HEADER cdio_device_drivers cdio_drivers cdio_loglevel_default cdio_os_driver cdio_version_string
++  discmode2str libcdio_version_num mmc_read_timeout_ms mmc_sense_key2str mmc_timeout_ms track_format2str
++)
++# Not exported: the iconv charset converter, which only exists with HAVE_ICONV (Windows converts with MultiByteToWideChar).
++set(LIBCDIO_SKIPPED_SYMBOLS cdio_charset_convert cdio_charset_converter_create cdio_charset_converter_destroy)
++file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/lib/driver/libcdio.sym" _symbols)
++set(_def "EXPORTS\n")
++foreach(_symbol IN LISTS _symbols)
++  string(STRIP "${_symbol}" _symbol)
++  if(NOT _symbol OR _symbol IN_LIST LIBCDIO_SKIPPED_SYMBOLS)
++    continue()
++  endif()
++  if(_symbol IN_LIST LIBCDIO_DATA_SYMBOLS OR _symbol MATCHES "^debug_")
++    string(APPEND _def "  ${_symbol} DATA\n")
++  else()
++    string(APPEND _def "  ${_symbol}\n")
++  endif()
++endforeach()
++file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/libcdio.def" "${_def}")
++
++if(BUILD_SHARED_LIBS)
++  add_library(cdio SHARED ${LIBCDIO_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/libcdio.def")
++else()
++  add_library(cdio STATIC ${LIBCDIO_SOURCES})
++endif()
++
++target_compile_definitions(cdio PRIVATE WIN32 HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
++target_include_directories(cdio PRIVATE
++  "${CMAKE_CURRENT_BINARY_DIR}"
++  "${CMAKE_CURRENT_BINARY_DIR}/include"
++  "${CMAKE_CURRENT_SOURCE_DIR}/include"
++  "${CMAKE_CURRENT_SOURCE_DIR}/lib/driver"
++)
++if(MSVC)
++  # .vs/unistd.h: the few POSIX types and headers libcdio's sources expect.
++  target_include_directories(cdio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.vs")
++  target_compile_definitions(cdio PRIVATE LIBCDIO_MSVC_UNISTD_H)
++  # Same as .vs/libcdio.vcxproj: signed/unsigned compare, incompatible pointer types, shift too large, deprecated CRT names.
++  target_compile_options(cdio PRIVATE /wd4018 /wd4133 /wd4333 /wd4996)
++elseif(MINGW)
++  # Only for checking this build with a MinGW cross compiler (MinGW builds normally use configure): with MSVC every source
++  # gets <windows.h> through cdio/types.h and .vs/unistd.h, and the image drivers rely on that.
++  target_compile_options(cdio PRIVATE -include windows.h)
++endif()
++# mciSendCommand (open / close the tray).
++target_link_libraries(cdio PRIVATE winmm)
++
++if(BUILD_SHARED_LIBS)
++  # Upstream's libtool version, as the DLL's image version (lib/driver/Makefile.am: libcdio_la_CURRENT).
++  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/lib/driver/Makefile.am" _current REGEX "^libcdio_la_CURRENT *= *[0-9]+")
++  string(REGEX REPLACE "^libcdio_la_CURRENT *= *([0-9]+).*$" "\\1" _current "${_current}")
++  if(_current)
++    set_target_properties(cdio PROPERTIES VERSION ${_current}.0)
++  endif()
++endif()
++
++install(TARGETS cdio
++  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
++  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
++  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
++)
++install(DIRECTORY include/cdio/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/cdio"
++  FILES_MATCHING PATTERN "*.h" PATTERN "version.h" EXCLUDE
++)
++install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/cdio/version.h" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/cdio")
++
++# libcdio.pc, what GStreamer's cdio plugin and Akousma look for.
++set(prefix "${CMAKE_INSTALL_PREFIX}")
++set(exec_prefix "\${prefix}")
++set(libdir "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
++set(includedir "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
++set(PACKAGE_NAME "libcdio")
++set(PACKAGE_VERSION "${VERSION}")
++if(BUILD_SHARED_LIBS)
++  set(LIBS "")
++else()
++  set(LIBS "-lwinmm")
++endif()
++set(LTLIBICONV "")
++set(DARWIN_PKG_LIB_HACK "")
++configure_file(libcdio.pc.in "${CMAKE_CURRENT_BINARY_DIR}/libcdio.pc" @ONLY)
++install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libcdio.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+diff --git a/include/cdio/types.h b/include/cdio/types.h
+index 1845259..a28fcdf 100644
+--- a/include/cdio/types.h
++++ b/include/cdio/types.h
+@@ -59,7 +59,25 @@ typedef uint8_t ubyte;
+    unistd.h that defines them. Such a file is provided with
+    the libcdio source, in the MSVC/missing directory */
+ #if defined(_MSC_VER)
++#if defined(LIBCDIO_MSVC_UNISTD_H)
++/* Building libcdio itself: .vs/unistd.h, as with upstream's Visual Studio project. */
+ #include <unistd.h>
++#else
++/* Programs using libcdio: MSVC has no unistd.h, so define the two types here, the same way as .vs/unistd.h (and MinGW). */
++#ifndef _MODE_T_DEFINED
++#define _MODE_T_DEFINED
++typedef unsigned short mode_t;
++#endif
++#ifndef _SSIZE_T_DEFINED
++#define _SSIZE_T_DEFINED
++#undef ssize_t
++#ifdef _WIN64
++typedef __int64 ssize_t;
++#else
++typedef int ssize_t;
++#endif
++#endif
++#endif /* LIBCDIO_MSVC_UNISTD_H */
+ #endif
+ 
+   /* default HP/UX macros are broken */

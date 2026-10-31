@@ -272,7 +272,7 @@ $KnownPackages = @(
   'uchardet', 'icu4c', 'pixman', 'expat', 'boost', 'libxml2', 'nghttp2', 'libffi', 'dlfcn-win32', 'libpsl', 'orc', 'sqlite', 'glib',
   'libsoup', 'glib-networking', 'freetype', 'harfbuzz', 'jasper', 'tiff', 'libwebp', 'ogg', 'vorbis', 'flac', 'wavpack', 'opus',
   'opusfile', 'speex', 'mpg123', 'lame', 'fftw3', 'musepack', 'libopenmpt', 'libgme', 'fdk-aac', 'faad2', 'faac', 'utfcpp', 'taglib',
-  'libbs2b', 'libebur128', 'ffmpeg', 'chromaprint', 'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
+  'libbs2b', 'libebur128', 'libcdio', 'ffmpeg', 'chromaprint', 'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
   'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'abseil-cpp', 'protobuf', 'qtbase', 'qttools', 'qtimageformats', 'qtsvg', 'qtgrpc',
   'kdsingleapplication', 'qtsparkle', 'sparsehash', 'glew', 'libprojectm', 'tinysvcmdns', 'pe-parse', 'pe-util'
 )
@@ -1472,6 +1472,7 @@ function GetPackageUrls {
     'taglib' = "https://taglib.org/releases/taglib-$taglib_version.tar.gz"
     'libbs2b' = "https://downloads.sourceforge.net/project/bs2b/libbs2b/$libbs2b_version/libbs2b-$libbs2b_version.tar.bz2"
     'libebur128' = "https://github.com/jiixyj/libebur128/archive/refs/tags/v$libebur128_version/libebur128-$libebur128_version.tar.gz"
+    'libcdio' = "https://github.com/libcdio/libcdio/releases/download/$libcdio_version/libcdio-$libcdio_version.tar.bz2"
     'chromaprint' = "https://github.com/acoustid/chromaprint/releases/download/v$chromaprint_version/chromaprint-$chromaprint_version.tar.gz"
     'gstreamer' = "https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-$gstreamer_version.tar.xz"
     'gst-plugins-base' = "https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-$gstreamer_version.tar.xz"
@@ -3142,6 +3143,30 @@ function Build-LibEBUR128 {
   }
 }
 
+# libcdio (Audio CD): lib/driver only (drives, audio CDs, CD-Text, the Windows driver through DeviceIoControl), as a DLL.
+# Upstream builds with autotools; patches/libcdio-cmake.patch adds a CMakeLists.txt that builds what upstream's own Visual
+# Studio project (.vs/libcdio.vcxproj) builds, with its .vs/config.h, and installs libcdio.pc. Used by GStreamer's cdio
+# plugin (gst-plugins-ugly) and by Akousma.
+function Build-LibCdio {
+  Write-Host "Building libcdio" -ForegroundColor Yellow
+  Push-Location $build_path
+  try {
+    DownloadPackage -package_name "libcdio"
+    ExtractPackage "libcdio-$libcdio_version.tar.bz2"
+    Push-Location "libcdio-$libcdio_version"
+    try {
+      & patch -p1 -N -i $patch_path/libcdio-cmake.patch
+      CMakeBuild
+    }
+    finally {
+      Pop-Location
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Build-FFMpeg {
   Write-Host "Building ffmpeg" -ForegroundColor Yellow
   Push-Location $build_path
@@ -3439,7 +3464,8 @@ function Build-GstPluginsUgly {
           "-Dtests=disabled",
           "-Ddoc=disabled",
           "-Dgpl=enabled",
-          "-Dasfdemux=enabled"
+          "-Dasfdemux=enabled",
+          "-Dcdio=enabled"
         )
     }
     finally {
@@ -3932,13 +3958,15 @@ function Get-AkousmaCMakeArgs {
   $qtsparkle = if ($enable_qtsparkle) { "ON" } else { "OFF" }
   # Release builds show the plain Akousma version; -IncludeGitCommit adds Akousma's short git commit.
   $git_commit = if ($include_git_commit) { "ON" } else { "OFF" }
+  # Audio CD needs libcdio (and GStreamer's cdio plugin, built with gst-plugins-ugly once libcdio is there).
+  $audiocd = if (Test-Path "$prefix_path/lib/pkgconfig/libcdio.pc") { "ON" } else { "OFF" }
   return @(
     "-DARCH=$arch",
     "-DENABLE_TRANSLATIONS=ON",
     "-DBUILD_WERROR=ON",
     "-DENABLE_WIN32_CONSOLE=$enable_win32_console",
     "-DICU_ROOT=$prefix_path",
-    "-DENABLE_AUDIOCD=OFF",
+    "-DENABLE_AUDIOCD=$audiocd",
     "-DENABLE_MTP=OFF",
     "-DENABLE_GPOD=OFF",
     "-DENABLE_QTSPARKLE=$qtsparkle",
@@ -4023,6 +4051,13 @@ function Build-AkousmaSetup {
       Copy-Item "$prefix_path/plugins/sqldrivers/*.dll" "./sqldrivers/" -Force
       Copy-Item "$prefix_path/lib/gio/modules/*.dll" "./gio-modules/" -Force
       Copy-Item "$prefix_path/lib/gstreamer-1.0/*.dll" "./gstreamer-plugins/" -Force
+      # Audio CD: akousma.nsi lists GStreamer's cdio plugin when Akousma was built with Audio CD support (libcdio in the
+      # prefix, see Get-AkousmaCMakeArgs); CopyDLLDependencies stages libcdio's cdio.dll for it and akousma.exe.
+      $audiocd_built = (Test-Path "$build_path/akousma/build/CMakeCache.txt") -and (Select-String -Path "$build_path/akousma/build/CMakeCache.txt" -Pattern '^ENABLE_AUDIOCD:[A-Z]*=ON$' -Quiet)
+      if ($audiocd_built -and -not (Test-Path "./gstreamer-plugins/gstcdio.dll")) {
+        throw "Akousma was built with Audio CD support, but GStreamer's cdio plugin is missing ($prefix_path/lib/gstreamer-1.0/gstcdio.dll): rebuild gst-plugins-ugly (-ForceRebuild gst-plugins-ugly)."
+      }
+      Write-Host "Audio CD: $(if ($audiocd_built) { 'yes, gstcdio.dll and libcdio staged' } else { 'no (Akousma built without libcdio)' })" -ForegroundColor Cyan
       # Only the GStreamer tools the installer ships, so the DLLs only the others need are not staged.
       Copy-Item -Path "$prefix_path/bin/sqlite3.exe", "$prefix_path/bin/gst-launch-1.0.exe", "$prefix_path/bin/gst-play-1.0.exe", "$prefix_path/bin/gst-discoverer-1.0.exe" -Destination "." -Force
       & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./iconengines" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
@@ -4104,13 +4139,14 @@ function Get-PackageDependencies {
     "taglib"              = @("pkgconf", "zlib", "utfcpp")
     "libbs2b"             = @("pkgconf")
     "libebur128"          = @("pkgconf")
+    "libcdio"             = @("pkgconf")
     "ffmpeg"              = @("pkgconf", "yasm", "libxml2", "libwebp", "opusfile", "fftw3", "libebur128", "taglib") + $codecs
     "chromaprint"         = @("pkgconf", "ffmpeg", "fftw3")
     "gstreamer"           = @("pkgconf", "glib", "libffi", "zlib", "orc")
     "gst-plugins-base"    = @("pkgconf", "gstreamer", "orc", "harfbuzz", "freetype", "pixman", "libpng", "libjpeg-turbo", "opusfile") + $codecs
     "gst-plugins-good"    = @("pkgconf", "gst-plugins-base", "libsoup", "taglib", "pixman", "libxml2", "nghttp2") + $codecs
     "gst-plugins-bad"     = @("pkgconf", "gst-plugins-base", "libsoup", "libxml2", "nghttp2", "chromaprint", "opusfile", "musepack", "fftw3", "pixman") + $codecs
-    "gst-plugins-ugly"    = @("pkgconf", "gst-plugins-base")
+    "gst-plugins-ugly"    = @("pkgconf", "gst-plugins-base", "libcdio")
     "gst-libav"           = @("pkgconf", "gst-plugins-base", "ffmpeg")
     "gst-plugins-rs"      = @("pkgconf", "gst-plugins-base", "gst-plugins-bad", "glib", "openssl", "zlib")
     "abseil-cpp"          = @("pkgconf")
@@ -4411,6 +4447,7 @@ function Get-PackageMarkers {
     "taglib"              = "$prefix_path/lib/pkgconfig/taglib.pc"
     "libbs2b"             = "$prefix_path/lib/libbs2b.lib"
     "libebur128"          = "$prefix_path/lib/pkgconfig/libebur128.pc"
+    "libcdio"             = "$prefix_path/lib/pkgconfig/libcdio.pc"
     "ffmpeg"              = "$prefix_path/lib/avutil.lib"
     "chromaprint"         = "$prefix_path/lib/pkgconfig/libchromaprint.pc"
     "gstreamer"           = "$prefix_path/lib/pkgconfig/gstreamer-1.0.pc"
@@ -5133,6 +5170,7 @@ try {
       "taglib" { Build-TagLib }
       "libbs2b" { Build-LibBS2B }
       "libebur128" { Build-LibEBUR128 }
+      "libcdio" { Build-LibCdio }
       "ffmpeg" { Build-FFMpeg }
       "chromaprint" { Build-Chromaprint }
       "gstreamer" { Build-GStreamer }

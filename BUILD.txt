@@ -8,8 +8,9 @@ script for Akousma:
                             and the AkousmaSetup installer, in one run. It replaces both StrawberryMSVCBuild.ps1 (the
                             patched upstream script) and the akousma\Build-Strawberry.ps1 wrapper.
   local-patches\            patches for dependencies (qtbase-*, gstreamer-*, ...), applied automatically
-  patches\                  upstream's own patches (glib-networking.patch, qtbase-qwindowswindow.patch, ...); the script
-                            applies those itself. Put your patches in local-patches\, never here.
+  patches\                  upstream's own patches (glib-networking.patch, qtbase-qwindowswindow.patch, ...) and
+                            libcdio-cmake.patch (see Audio CD below); the script applies those itself. Put your
+                            patches in local-patches\, never here.
   CopyDLLDependencies.ps1   upstream's helper that collects the DLLs for the installer
   StrawberryPackageVersions.txt
                             upstream's dependency versions (name kept: it is upstream's file)
@@ -180,6 +181,28 @@ Check that it worked:
      prints nothing.
   3. Admin prompt: gflags /p /enable akousma.exe /full, then start and close Akousma 20+ times (no crash), then:
      gflags /p /disable akousma.exe   (PageHeap makes it slow; turn it off).
+
+
+Audio CD (libcdio)
+------------------
+Upstream's Windows builds have no Audio CD support (-DENABLE_AUDIOCD=OFF): it needs libcdio, which builds with
+autotools. This build has it:
+  - libcdio (LIBCDIO_VERSION in StrawberryPackageVersions.txt, 2.4.0 like MSYS2's mingw-w64-libcdio), from the
+    release tarball. patches\libcdio-cmake.patch adds a CMakeLists.txt that builds lib/driver (drives, audio CDs,
+    CD-Text, the Windows driver, which uses DeviceIoControl) with the same sources and .vs\config.h as upstream's own
+    Visual Studio project (.vs\libcdio.vcxproj), but as cdio.dll with the shared C runtime like every other package,
+    exporting what lib/driver/libcdio.sym lists, and installs the headers and libcdio.pc. The patch also lets programs
+    using libcdio compile with MSVC: cdio/types.h includes <unistd.h>, which MSVC doesn't have, so it defines the two
+    types it needs (mode_t, ssize_t) itself, the way .vs\unistd.h does. libiso9660, libudf, libcdio-paranoia and the
+    programs (cd-info...) are not built; Akousma plays CDs through GStreamer's cdiocddasrc, which reads the audio sectors
+    with libcdio itself.
+  - gst-plugins-ugly with -Dcdio=enabled: GStreamer's cdio plugin (gstcdio.dll, cdiocddasrc).
+  - Akousma with -DENABLE_AUDIOCD=ON when the prefix has libcdio.pc (otherwise OFF, as before).
+  - AkousmaSetup: gstcdio.dll is staged with the other GStreamer plugins and cdio.dll with the other DLLs; akousma.nsi
+    lists the plugin when Akousma has Audio CD support. Staging stops with a message if Akousma has it but the plugin
+    is missing (then: -ForceRebuild gst-plugins-ugly).
+Change detection rebuilds what this needs by itself: libcdio is new, gst-plugins-ugly's recipe changed, Akousma's CMake
+arguments changed.
 
 
 glib-networking
