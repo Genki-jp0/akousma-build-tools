@@ -131,6 +131,9 @@ function Resolve-BinaryPath {
 
 $DependenciesSeen = @{}
 $DependenciesCopied = @{}
+# The binaries found in -InDir: analyzed for their dependencies but not copied, they are where they belong already (a plugin
+# in a plugin folder must not get a second copy in -DestDir).
+$SeedPaths = @{}
 $DependenciesQueue = New-Object System.Collections.Queue
 
 foreach ($InDir in $InDirs) {
@@ -141,6 +144,7 @@ foreach ($InDir in $InDirs) {
       if (-not $DependenciesSeen.ContainsKey($name)) {
         $DependenciesSeen[$name] = $true
         $DependenciesQueue.Enqueue($_.FullName)
+        $SeedPaths[$_.FullName] = $true
         Write-Host "Seed: $($_.FullName)"
       }
     }
@@ -160,7 +164,10 @@ while ($DependenciesQueue.Count -gt 0) {
   $FileName = ([IO.Path]::GetFileName($ResolvedDependency)).ToLower()
   $DestFilePath = Join-Path $DestDir ([IO.Path]::GetFileName($ResolvedDependency))
 
-  if (-not $DependenciesCopied.ContainsKey($FileName)) {
+  if ($SeedPaths.ContainsKey($DependencyItem)) {
+    $DependenciesCopied[$FileName] = $true
+  }
+  elseif (-not $DependenciesCopied.ContainsKey($FileName)) {
     if (Test-Path $DestFilePath) {
       Write-Host "SKIP (exists): $FileName"
     }

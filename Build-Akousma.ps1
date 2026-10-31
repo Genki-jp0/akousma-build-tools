@@ -4004,8 +4004,8 @@ function Build-AkousmaSetup {
     Push-Location "AkousmaSetup"
     try {
       # akousma.nsi installs every DLL staged here, so start from no DLLs: none left over from an earlier run (an older
-      # FFmpeg or ICU version, a dependency no longer needed).
-      Get-ChildItem -Path "." -Include "*.dll" -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+      # FFmpeg or ICU version, a dependency no longer needed). Icon sets too (a removed set's .rcc).
+      Get-ChildItem -Path "." -Include "*.dll", "*.rcc" -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
       New-Item -Path @('platforms', 'styles', 'imageformats', 'iconengines', 'tls', 'sqldrivers', 'gio-modules', 'gstreamer-plugins', 'iconsets') -ItemType Directory -Force
       Copy-Item -Path "$build_path/akousma/build/akousma.exe", `
                       "$build_path/akousma/build/akousma.nsi", `
@@ -4023,7 +4023,8 @@ function Build-AkousmaSetup {
       Copy-Item "$prefix_path/plugins/sqldrivers/*.dll" "./sqldrivers/" -Force
       Copy-Item "$prefix_path/lib/gio/modules/*.dll" "./gio-modules/" -Force
       Copy-Item "$prefix_path/lib/gstreamer-1.0/*.dll" "./gstreamer-plugins/" -Force
-      Copy-Item -Path "$prefix_path/bin/sqlite3.exe", "$prefix_path/bin/gst-*.exe" -Destination "." -Force
+      # Only the GStreamer tools the installer ships, so the DLLs only the others need are not staged.
+      Copy-Item -Path "$prefix_path/bin/sqlite3.exe", "$prefix_path/bin/gst-launch-1.0.exe", "$prefix_path/bin/gst-play-1.0.exe", "$prefix_path/bin/gst-discoverer-1.0.exe" -Destination "." -Force
       & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./iconengines" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
       # The uninstaller deletes exactly the DLLs staged here (akousma.nsi includes this file).
       Get-ChildItem -Path "." -Filter "*.dll" -File | Sort-Object Name | ForEach-Object { "  Delete `"`$INSTDIR\$($_.Name)`"" } | Set-Content -Path "akousma-uninstall-dlls.nsh" -Encoding ascii
