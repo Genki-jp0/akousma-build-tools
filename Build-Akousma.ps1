@@ -1,4 +1,9 @@
-﻿# Strawberry Music Player
+#Requires -Version 7.0
+# Akousma MSVC build script
+# Copyright 2026, Genki (genki_jp0) <genki_jp0@users.noreply.github.com>
+#
+# Based on StrawberryMSVCBuild.ps1 from strawberry-msvc-build-tools:
+# Strawberry Music Player
 # Copyright 2025-2026, Jonas Kvinge <jonas@jkvinge.net>
 #
 # Strawberry is free software: you can redistribute it and/or modify
@@ -17,146 +22,718 @@
 
 <#
 .SYNOPSIS
-  Build script for Strawberry MSVC dependencies
+  Builds Akousma for Windows with MSVC: every dependency, Akousma itself and the AkousmaSetup installer.
+
 .DESCRIPTION
-  Builds all dependencies required for Strawberry Music Player on Windows using MSVC
-.PARAMETER build_type
-  Build type: debug or release (default: debug)
-.PARAMETER arch
-  Architecture: x86, x64, x86_64, amd64, or arm64
-.PARAMETER src_path
-  Where git sources (strawberry, qt*, gstreamer, ffmpeg, ...) are cloned. Empty = same as downloads_path.
-.PARAMETER downloads_path
-  Path to downloads directory (default: <root>/data/projects/strawberry/msvc_/downloads)
-.PARAMETER build_path
-  Path to build directory (default: <root>/data/projects/strawberry/msvc_/build_<arch>_<build_type>, where <arch> and <build_type> are substituted with the actual parameter values)
-.PARAMETER prefix_path
-  Install prefix (default: <root>/strawberry_msvc_<arch>_<build_type>)
-.NOTES
-  <root> is $env:STRAWBERRY_ROOT if set (Build-Strawberry.ps1 sets it to its -WorkRoot), otherwise C: (upstream's default).
-  Tools (git usr/bin tools, nasm, win_flex/win_bison, perl, python, 7z, cmake, meson) are taken from PATH first, then
-  registry / usual install folders; add extra folders (';'-separated) with $env:SMB_TOOL_PATHS.
-.PARAMETER jobs
-  Parallel jobs used inside every package (jom, ninja, b2, msbuild, cargo, cl /MP). Default: logical processors.
-.PARAMETER parallel_packages
-  Build this many independent packages at the same time (default 1 = sequential, like upstream).
-  Uses a dependency graph and one child pwsh process per package; logs go to -log_dir.
-.PARAMETER versions_file
-  Use another StrawberryPackageVersions.txt instead of the one next to this script.
-.PARAMETER ci_versions_file
-  Path/URL of a strawberry-msvc-dependencies .github/workflows/build.yaml; its *_version values override the versions file.
-.PARAMETER version_overrides
-  Hashtable, e.g. @{ qt_version = '6.11.2'; boost_version = '1.92.0' }. Applied last.
-.PARAMETER strawberry_ref
-  Tag/branch/commit of the strawberry source to build (e.g. 1.2.30). Upstream builds master otherwise.
-.PARAMETER git_refs
-  Hashtable pinning any git-sourced component, e.g. @{ 'gst-plugins-rs' = '0.15.3'; ffmpeg = '<sha>' }.
-.PARAMETER only
-  Build only these components (still skipped if already built).
-.PARAMETER skip
-  Never build these components.
-.PARAMETER list
-  Print the build queue and exit.
-.PARAMETER jom_path
-  Folder containing jom.exe (otherwise PATH, otherwise downloaded to <downloads_path>/jom, otherwise nmake fallback).
-.PARAMETER log_dir
-  Per-package logs when -parallel_packages > 1 (default <build_path>/logs).
-.PARAMETER package_patches
-  Local patches per package, e.g. @{ strawberry = @('a.patch', 'b.patch'); 'gst-plugins-good' = @('c.patch') }: -p1, applied in
-  order after the build tools' own patches (strawberry: after its source is reset to the commit). Only for packages built with
-  CMakeBuild / MesonBuild, and strawberry. SMB_STRAWBERRY_PATCH (';'-separated) and SMB_GST_GOOD_PATCH are still read when
-  this has no entry for those two.
-.PARAMETER force_rebuild
-  Rebuild these packages even if they are up to date ('all' = every package). Dependencies are rebuilt from a clean copy,
-  strawberry from a fresh copy of its source and an empty build folder.
-.PARAMETER no_change_detection
-  Decide like upstream: build what has no output, skip everything else (stamps are still written after builds).
-.PARAMETER rebuild_dependents
-  When a package is rebuilt for a change of its own, also rebuild its direct dependents (shared libraries included).
-  Without it only dependents of header-only packages are rebuilt (plus strawberry's relink and StrawberrySetup, always).
-.PARAMETER child_build
-  Internal: a child process of the parallel build, building -only <package> without deciding again.
+  One script: it prepares the build environment and then builds, in the same run.
+    1. Redirects TEMP / pip cache / cargo / rustup under the work root and copies existing .cargo / .rustup there (once)
+    2. Downloads jom.exe if missing
+    3. Copies missing downloaded archives from the old downloads folder (once), stops leftover compilers, removes partial
+       OpenSSL trees
+    4. Builds what is missing or changed, logging to -LogPath (per-package logs in -LogDir, stamps in <BuildPath>\.stamps):
+       the dependencies (with the build tools' own patches\ and the local-patches\ folder), then Akousma from its git
+       repository (-AkousmaRepo at -AkousmaRef) or from a local checkout (-AkousmaSource), then AkousmaSetup-*.exe.
+  Run it in PowerShell 7 (pwsh) from anywhere; the build tools are the folder this script is in.
+
+  Tools the build expects (Git, Strawberry Perl, nasm, CMake, 7-Zip, Python, win_flex_bison, Meson, NSIS with the LockedList
+  plugin, Visual Studio) are installed programs. They are found on PATH first, then through the registry and the usual install
+  folders; add other folders (';'-separated) with $env:SMB_TOOL_PATHS. The root and Program Files of every fixed drive are
+  searched too. Missing tools are all reported together before anything is built.
+
+  Change detection: every package's build is stamped with what went into it (version / git commit, patch hashes, build
+  recipe). A run skips what is up to date, rebuilds what changed (dependencies from a clean copy, Akousma incrementally) and
+  prints the decision for every package before it builds. See -ForceRebuild, -NoChangeDetection, -RebuildDependents.
+
+  Local patches: every *.patch / *.diff in local-patches\ next to this script is applied (-p1) to the dependency its name
+  starts with (qtbase-*.patch -> qtbase, gstreamer-*.patch -> gst-plugins-good, glib-networking-x.patch -> glib-networking,
+  ...), or to <package> for local-patches\<package>\*.patch. Akousma's own changes are commits in the Akousma repository,
+  so patches for Akousma (or Strawberry) are not accepted here.
+
+.PARAMETER AkousmaRepo       Git URL of the Akousma source. Default https://github.com/Genki-jp0/Akousma.git.
+.PARAMETER AkousmaRef        Branch, tag or commit of -AkousmaRepo to build. Default master.
+.PARAMETER AkousmaSource     A local Akousma checkout to build instead of -AkousmaRepo, as it is (uncommitted changes included).
+                             It is built out of tree, in <BuildPath>\akousma\build; the checkout itself is not changed.
+.PARAMETER EnableQtSparkle   Build Akousma with the QtSparkle update check. Off by default: the only QtSparkle feed is
+                             upstream Strawberry's, which offers Strawberry releases, not Akousma ones.
+.PARAMETER BuildType          release (default) or debug.
+.PARAMETER Arch               x86_64 (default), x86, x64, amd64 or arm64.
+.PARAMETER Jobs               Parallel jobs in total (split between parallel packages). Default: logical processors.
+.PARAMETER ParallelPackages   Packages built at the same time. 0 = auto (half the jobs, min 2). 1 = one after the other.
+.PARAMETER Only / -Skip       Build only / never build these packages (when they need building). Akousma is "akousma", the
+                              installer "akousma-setup".
+.PARAMETER List               Print the per-package decision (skip / adopt / build / rebuild and why) and the build queue,
+                              then exit.
+.PARAMETER DryRun             Print the resolved locations, the Akousma source and the local patches, then exit. Changes
+                              nothing; also runs on Linux and macOS, for checking a command line.
+.PARAMETER ForceRebuild       Rebuild these packages even when they are up to date, e.g. -ForceRebuild gst-plugins-good,akousma
+                              ('all' = everything). Dependencies get a clean copy; akousma a fresh copy of its source and an
+                              empty build folder.
+.PARAMETER NoChangeDetection  Build what has no output and skip everything else, whatever changed (akousma is still rebuilt
+                              when its build tree is not at -AkousmaRef). Stamps are still written after builds.
+.PARAMETER RebuildDependents  When a package is rebuilt because it changed, also rebuild the packages that link it directly
+                              (e.g. after a version bump that renames a DLL). Without it, only dependents of header-only
+                              packages are rebuilt; akousma is relinked and AkousmaSetup re-created after any rebuild either way.
+.PARAMETER VersionOverrides   e.g. -VersionOverrides @{ qt_version = '6.11.2' }
+.PARAMETER GitRefs            e.g. -GitRefs @{ 'gst-plugins-rs' = '0.15.3' }. glib-networking is pinned automatically to the
+                              commit this repository's patches\glib-networking.patch applies to; an entry here wins.
+.PARAMETER VersionsFile       Alternative StrawberryPackageVersions.txt.
+.PARAMETER CiVersionsFile     strawberry-msvc-dependencies build.yaml (path/URL) whose *_version values win.
+.PARAMETER CiVersionsRef      Fetch strawberry-msvc-dependencies' build.yaml automatically (ignored with -CiVersionsFile).
+                              'auto'   = the newest build.yaml commit that existed when the Akousma commit being built was
+                                         made (GitHub API; set $env:GITHUB_TOKEN if you hit the unauthenticated rate limit),
+                              'master' / a tag / a commit = that exact revision.
+                              Empty = no CI file. The download is cached in <TempPath> and used as -CiVersionsFile.
+.PARAMETER GstGoodPatch       A .patch file (-p1, relative to the gst-plugins-good root) for gst-plugins-good. Passing it turns
+                              off the local-patches\ files for gst-plugins-good.
+.PARAMETER NoAutoPatches      Don't apply local-patches\ (only -GstGoodPatch). The build tools' own patches\ are always applied.
+.PARAMETER SkipBuild          Prepare everything (folders, caches, jom, downloads migration), but don't build.
+.PARAMETER RemoveOldCDrive    Delete the old C: build tree, prefix and downloads (-OldBuildPath, -OldPrefixPath, -OldDownloads).
+.PARAMETER WorkRoot           Drive/folder everything is built under. Default C:\, wherever this script is.
+.PARAMETER ProjectRoot, MsvcRoot, DownloadsPath, SrcPath, BuildPath, PrefixPath, JomDir, TempPath,
+           PipCachePath, CargoHome, RustupHome, LogPath, LogDir
+                              Locations. Empty = under the work root. With no path parameters the defaults are:
+                                ProjectRoot   C:\data\projects\strawberry   (build.log)
+                                DownloadsPath C:\data\projects\strawberry\msvc_\downloads   (SrcPath: the same; Akousma is
+                                              cloned to <SrcPath>\akousma)
+                                BuildPath     C:\data\projects\strawberry\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
+                                PrefixPath    C:\strawberry_msvc_<arch>_<build type>
+                                JomDir        C:\data\projects\strawberry\strawberry-msvc\tools\jom   (only when jom.exe is not
+                                              on PATH)
+                                TempPath C:\temp, PipCachePath C:\cache\pip, CargoHome C:\cargo, RustupHome C:\rustup,
+                                LogPath C:\data\projects\strawberry\build.log
+                              The dependency folders keep upstream's strawberry names on purpose: existing dependency builds
+                              and upstream's prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages are used as they are.
+.PARAMETER OldCargoHome, OldRustupHome, OldDownloads, OldBuildPath, OldPrefixPath
+                              Old locations to migrate from / clean. Empty = the usual old spots (%USERPROFILE%\.cargo,
+                              <system drive>\data\..., ...); skipped if absent.
+.PARAMETER GitBinPath         Git's bin folder, added to PATH. Empty = found through git.exe on PATH.
+
 .EXAMPLE
-  ./StrawberryMSVCBuild.ps1 -build_type release -arch x86_64
-.EXAMPLE
-  ./StrawberryMSVCBuild.ps1 -build_type debug -arch x86_64 -downloads_path "D:/strawberry/downloads" -build_path "D:/strawberry/build"
+  # Akousma master, everything on C:
+  .\Build-Akousma.ps1
+  # A tag or commit of Akousma, built on E:, with the dependency versions upstream's CI used at that time
+  .\Build-Akousma.ps1 -AkousmaRef 7f216b8 -CiVersionsRef auto -WorkRoot E:\
+  # A local checkout with uncommitted changes
+  .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma
+  # What would be rebuilt and why, without building anything
+  .\Build-Akousma.ps1 -List
+  # Rebuild gst-plugins-good from scratch (akousma is relinked, AkousmaSetup re-created)
+  .\Build-Akousma.ps1 -ForceRebuild gst-plugins-good
+  # Check a command line: resolved folders, source and local patches, nothing is changed
+  .\Build-Akousma.ps1 -WorkRoot E:\ -AkousmaSource E:\src\Akousma -DryRun
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)]
+  # Akousma source
+  [Alias('akousma_repo')]
+  [string]$AkousmaRepo      = "https://github.com/Genki-jp0/Akousma.git",
+  [string]$AkousmaRef       = "master",
+  [Alias('akousma_source')]
+  [string]$AkousmaSource    = "",
+  [Alias('enable_qtsparkle')]
+  [switch]$EnableQtSparkle,
+
+  # versions / options
+  [Alias('build_type')]
   [ValidateSet("debug", "release", "Debug", "Release")]
-  [string]$build_type,
-
-  [Parameter(Mandatory=$true)]
+  [string]$BuildType        = "release",
   [ValidateSet("x86", "x64", "x86_64", "amd64", "arm64")]
-  [string]$arch,
-
-  [Parameter(Mandatory=$false)]
-  [string]$downloads_path = "",
-
-  [Parameter(Mandatory=$false)]
-  [string]$src_path = "",
-
-  [Parameter(Mandatory=$false)]
-  [string]$build_path = "",
-
-  [Parameter(Mandatory=$false)]
-  [string]$prefix_path = "",
-
-  [Parameter(Mandatory=$false)]
+  [string]$Arch             = "x86_64",
   [ValidateRange(0, 512)]
-  [int]$jobs = 0,
-
-  [Parameter(Mandatory=$false)]
+  [int]$Jobs                = 0,
+  [Alias('parallel_packages')]
   [ValidateRange(0, 64)]
-  [int]$parallel_packages = 1,
+  [int]$ParallelPackages    = 0,
+  [string[]]$Only           = @(),
+  [string[]]$Skip           = @(),
+  [switch]$List,
+  [switch]$DryRun,
+  [Alias('force_rebuild')]
+  [string[]]$ForceRebuild   = @(),
+  [Alias('no_change_detection')]
+  [switch]$NoChangeDetection,
+  [Alias('rebuild_dependents')]
+  [switch]$RebuildDependents,
+  [Alias('version_overrides')]
+  [hashtable]$VersionOverrides = @{},
+  [Alias('git_refs')]
+  [hashtable]$GitRefs       = @{},
+  [Alias('versions_file')]
+  [string]$VersionsFile     = "",
+  [Alias('ci_versions_file')]
+  [string]$CiVersionsFile   = "",
+  [string]$CiVersionsRef    = "",
+  [string]$GstGoodPatch     = "",
+  [switch]$NoAutoPatches,
+  [switch]$SkipBuild,
+  [switch]$RemoveOldCDrive,
 
-  [Parameter(Mandatory=$false)]
-  [string]$versions_file = "",
+  # locations (empty = derived from -WorkRoot, see the help)
+  [string]$WorkRoot         = "",
+  [string]$ProjectRoot      = "",
+  [string]$MsvcRoot         = "",
+  [Alias('downloads_path')]
+  [string]$DownloadsPath    = "",
+  [Alias('src_path')]
+  [string]$SrcPath          = "",
+  [Alias('build_path')]
+  [string]$BuildPath        = "",
+  [Alias('prefix_path')]
+  [string]$PrefixPath       = "",
+  [string]$JomDir           = "",
+  [string]$TempPath         = "",
+  [string]$PipCachePath     = "",
+  [string]$CargoHome        = "",
+  [string]$RustupHome       = "",
+  [string]$LogPath          = "",
+  [Alias('log_dir')]
+  [string]$LogDir           = "",
 
-  [Parameter(Mandatory=$false)]
-  [string]$ci_versions_file = "",
+  # old locations to migrate from / clean up
+  [string]$OldCargoHome     = "",
+  [string]$OldRustupHome    = "",
+  [string]$OldDownloads     = "",
+  [string]$OldBuildPath     = "",
+  [string]$OldPrefixPath    = "",
 
-  [Parameter(Mandatory=$false)]
-  [hashtable]$version_overrides = @{},
+  [string]$GitBinPath       = "",   # empty = <Git root>\bin, found through git.exe on PATH
 
-  [Parameter(Mandatory=$false)]
-  [string]$strawberry_ref = "",
-
-  [Parameter(Mandatory=$false)]
-  [hashtable]$git_refs = @{},
-
-  [Parameter(Mandatory=$false)]
-  [string[]]$only = @(),
-
-  [Parameter(Mandatory=$false)]
-  [string[]]$skip = @(),
-
-  [Parameter(Mandatory=$false)]
-  [switch]$list,
-
-  [Parameter(Mandatory=$false)]
-  [string]$jom_path = "",
-
-  [Parameter(Mandatory=$false)]
-  [string]$log_dir = "",
-
-  [Parameter(Mandatory=$false)]
+  # Internal: the build itself (-inner_build, started by the preparation part of this script) and the per-package child
+  # processes of the parallel build (-child_build).
+  [Parameter(DontShow)]
+  [string]$jom_path         = "",
+  [Parameter(DontShow)]
   [hashtable]$package_patches = @{},
-
-  [Parameter(Mandatory=$false)]
-  [string[]]$force_rebuild = @(),
-
-  [Parameter(Mandatory=$false)]
-  [switch]$no_change_detection,
-
-  [Parameter(Mandatory=$false)]
-  [switch]$rebuild_dependents,
-
-  [Parameter(Mandatory=$false)]
+  [Parameter(DontShow)]
+  [switch]$inner_build,
+  [Parameter(DontShow)]
   [switch]$child_build
 )
+
+#region Preparation
+# This part runs when the script is started by the user. It resolves the locations, prepares the environment and then runs the
+# build part below in the same session (-inner_build), with the output also written to -LogPath. The build part starts one
+# child process per package for the parallel build (-child_build). Both skip this region.
+if (-not $inner_build -and -not $child_build) {
+
+# Remember where the user started; restored in the finally block at the very end (success, failure or Ctrl+C).
+$StartLocation = (Get-Location).Path
+# Same for the environment: this script (Path, TEMP/TMP, PIP_CACHE_DIR, CARGO_HOME, RUSTUP_HOME, AKOUSMA_WORK_ROOT, SMB_*) and the
+# build (Visual Studio dev shell: Path, INCLUDE, LIB, ...) change environment variables. Without a restore, every run in the
+# same window prepended to Path again until cmd failed with "The input line is too long".
+$StartEnv = [hashtable]::new($(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }))   # names compare like the OS does
+foreach ($e in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $StartEnv[[string]$e.Key] = [string]$e.Value }
+try {
+
+$ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------
+# Relative paths in the parameters (e.g. .\local-patches\x.patch) are relative to the folder the script was started from.
+# The steps below Set-Location, so make every user-supplied path absolute now.
+# ---------------------------------------------------------------------
+function Resolve-UserPath([string]$p) {
+  # Empty = not passed (the default is derived later); a bare 'E:' stays the drive root; URLs are left alone.
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -match '^[A-Za-z]:$' -or $p -match '^[A-Za-z][A-Za-z0-9+.-]+://') { return $p }
+  return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
+}
+if ($GstGoodPatch) {
+  $full = Resolve-UserPath $GstGoodPatch
+  if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "-GstGoodPatch file not found: $GstGoodPatch (looked for $full)" }
+  $GstGoodPatch = $full
+}
+
+# ---------------------------------------------------------------------
+# Akousma source: a git repository (-AkousmaRepo at -AkousmaRef, cloned to <SrcPath>\akousma) or a local checkout.
+# ---------------------------------------------------------------------
+if ($AkousmaSource) {
+  $AkousmaSource = Resolve-UserPath $AkousmaSource
+  if (-not (Test-Path -LiteralPath (Join-Path $AkousmaSource 'CMakeLists.txt') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $AkousmaSource 'dist/windows/akousma.nsi.in') -PathType Leaf)) {
+    throw "-AkousmaSource '$AkousmaSource' is not an Akousma source tree (no CMakeLists.txt and dist\windows\akousma.nsi.in in it)."
+  }
+}
+elseif ([string]::IsNullOrWhiteSpace($AkousmaRepo)) {
+  throw "Pass -AkousmaRepo (a git URL) or -AkousmaSource (a local checkout)."
+}
+if (-not $AkousmaSource -and [string]::IsNullOrWhiteSpace($AkousmaRef)) { $AkousmaRef = "master" }
+
+# ---------------------------------------------------------------------
+# Local patches per dependency: -GstGoodPatch, else the local-patches folder next to this script.
+# ---------------------------------------------------------------------
+# Every package this script builds, for routing local-patches\<package>-*.patch.
+$KnownPackages = @(
+  'pkgconf', 'yasm', 'proxy-libintl', 'getopt-win', 'zlib', 'openssl', 'libpng', 'libjpeg-turbo', 'pcre2', 'bzip2', 'xz', 'brotli',
+  'uchardet', 'icu4c', 'pixman', 'expat', 'boost', 'libxml2', 'nghttp2', 'libffi', 'dlfcn-win32', 'libpsl', 'orc', 'sqlite', 'glib',
+  'libsoup', 'glib-networking', 'freetype', 'harfbuzz', 'jasper', 'tiff', 'libwebp', 'ogg', 'vorbis', 'flac', 'wavpack', 'opus',
+  'opusfile', 'speex', 'mpg123', 'lame', 'fftw3', 'musepack', 'libopenmpt', 'libgme', 'fdk-aac', 'faad2', 'faac', 'utfcpp', 'taglib',
+  'libbs2b', 'libebur128', 'ffmpeg', 'chromaprint', 'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
+  'gst-plugins-ugly', 'gst-libav', 'gst-plugins-rs', 'abseil-cpp', 'protobuf', 'qtbase', 'qttools', 'qtimageformats', 'qtgrpc',
+  'kdsingleapplication', 'qtsparkle', 'sparsehash', 'glew', 'libprojectm', 'tinysvcmdns', 'pe-parse', 'pe-util'
+)
+function Get-NaturalSortKey([string]$s) {
+  return [regex]::Replace($s.ToLowerInvariant(), '\d+', { param($m) $m.Value.PadLeft(12, '0') })
+}
+function Get-PatchTarget([string]$Path, [string]$PatchDir, [string[]]$Packages) {
+  # local-patches\<package>\x.patch -> <package>; local-patches\x.patch -> the package its name starts with.
+  # Anything else stops the run: there is no default package any more.
+  $dir = Split-Path -Parent $Path
+  if (-not ([System.IO.Path]::GetFullPath($dir).TrimEnd('\', '/') -ieq [System.IO.Path]::GetFullPath($PatchDir).TrimEnd('\', '/'))) {
+    $leafDir = Split-Path -Leaf $dir
+    $match = $Packages | Where-Object { $_ -ieq $leafDir } | Select-Object -First 1
+    if (-not $match) {
+      throw "${Path}: the folder '$leafDir' is not a dependency name, so this patch can't be routed. Move it to local-patches\<package>\ or name it <package>-*.patch."
+    }
+    return $match
+  }
+  $base = [System.IO.Path]::GetFileNameWithoutExtension($Path) -replace '^\d+[-_.]', ''
+  if ($base -match '^(?i)(strawberry|akousma)([-_.]|$)') {
+    throw "${Path}: patches for Strawberry / Akousma are not applied any more. Akousma's changes are commits in the Akousma repository (-AkousmaRepo / -AkousmaSource); commit the change there and remove this file."
+  }
+  if ($base -match '^(?i)gstreamer-') { return 'gst-plugins-good' }   # e.g. gstreamer-flacparse-invalid-frame.patch; core: local-patches\gstreamer\
+  $match = $Packages | Where-Object { $base -ieq $_ -or $base.StartsWith("$_-", [StringComparison]::OrdinalIgnoreCase) } |
+           Sort-Object Length -Descending | Select-Object -First 1
+  if ($match) { return $match }
+  throw "${Path}: the name doesn't start with a dependency name (qtbase-*.patch, gstreamer-*.patch, glib-networking-*.patch, ...), so it can't be routed. Rename it or move it to local-patches\<package>\."
+}
+function Get-PatchFiles([string]$PatchDir) {
+  # Every *.patch and *.diff directly in the patches folder and in its subfolders (one level), in a fixed order.
+  $isPatch = { $_.Extension -ieq '.patch' -or $_.Extension -ieq '.diff' }
+  $files = @(Get-ChildItem -LiteralPath $PatchDir -File | Where-Object $isPatch) +
+           @(Get-ChildItem -LiteralPath $PatchDir -Directory | Sort-Object Name |
+             ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -File | Where-Object $isPatch })
+  return @($files | Sort-Object { Get-NaturalSortKey $_.Name }, { $_.FullName })
+}
+function Assert-PatchFile([string]$Path) {
+  # A file that holds no diff would be "applied" without changing anything: stop instead.
+  $text = [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+  if (-not ($text -match '(?m)^\+\+\+ ' -or $text.Contains("`nGIT binary patch`n"))) {
+    throw "$Path is not a patch (no '+++ ' file header and no GIT binary patch in it). Fix or remove it; every *.patch / *.diff in local-patches is applied."
+  }
+}
+function Get-PackagePatches {
+  # Returns @{ Patches = [ordered]@{ package = full paths in order }; Sources = [ordered]@{ package = where they came from };
+  #            Found = @( @{ Name; Path; Target; Status } for every file in the patches folder ) }.
+  param([string]$PatchDir, [string]$GstGoodPatch = "", [switch]$NoAutoPatches, [string[]]$Packages)
+  $patches = [ordered]@{}
+  $sources = [ordered]@{}
+  $report = [System.Collections.Generic.List[object]]::new()
+  if ($GstGoodPatch) { $patches['gst-plugins-good'] = @($GstGoodPatch); $sources['gst-plugins-good'] = '-GstGoodPatch' }
+  if (-not $NoAutoPatches -and (Test-Path -LiteralPath $PatchDir -PathType Container)) {
+    $found = [ordered]@{}
+    foreach ($f in @(Get-PatchFiles $PatchDir)) {
+      $rel = [System.IO.Path]::GetRelativePath($PatchDir, $f.FullName)
+      $target = Get-PatchTarget -Path $f.FullName -PatchDir $PatchDir -Packages $Packages
+      Assert-PatchFile $f.FullName
+      $status = 'apply'
+      if ($sources.Contains($target)) { $status = "skip ($($sources[$target]) was passed, so local-patches is not used for $target)" }
+      $report.Add(@{ Name = $rel; Path = $f.FullName; Target = $target; Status = $status })
+      if ($status -ne 'apply') { continue }
+      if (-not $found.Contains($target)) { $found[$target] = [System.Collections.Generic.List[object]]::new() }
+      $found[$target].Add($f)
+    }
+    foreach ($t in $found.Keys) {
+      $patches[$t] = @($found[$t] | Sort-Object { Get-NaturalSortKey $_.Name }, { $_.FullName } | ForEach-Object { $_.FullName })
+      $sources[$t] = 'local-patches'
+    }
+  }
+  return @{ Patches = $patches; Sources = $sources; Found = @($report) }
+}
+$PatchDir = Join-Path $PSScriptRoot 'local-patches'
+$patchPlan = Get-PackagePatches -PatchDir $PatchDir -GstGoodPatch $GstGoodPatch -NoAutoPatches:$NoAutoPatches -Packages $KnownPackages
+$PackagePatches = $patchPlan.Patches
+# Every patch file in the folder, so a missing (or misrouted) patch is obvious: printed here and again at the top of the log.
+function Write-PatchSummary {
+  if ($NoAutoPatches) { Write-Host "Local patches folder: not used (-NoAutoPatches)" -ForegroundColor Cyan }
+  elseif (-not (Test-Path -LiteralPath $PatchDir -PathType Container)) { Write-Host "Local patches folder: none ($PatchDir does not exist)" -ForegroundColor Cyan }
+  else {
+    Write-Host "Patch files found in ${PatchDir}: $($patchPlan.Found.Count)" -ForegroundColor Cyan
+    foreach ($r in $patchPlan.Found) {
+      Write-Host ("  {0,-45} -> {1,-18} {2}" -f $r.Name, $r.Target, $r.Status) -ForegroundColor $(if ($r.Status -like 'apply*') { 'Cyan' } else { 'Yellow' })
+    }
+  }
+  if ($PackagePatches.Count -gt 0) {
+    Write-Host "Local patches (-p1, in this order, after the build tools' own):" -ForegroundColor Cyan
+    foreach ($pkg in $PackagePatches.Keys) {
+      Write-Host ("  {0,-18} {1}   ({2})" -f $pkg, ((@($PackagePatches[$pkg]) | ForEach-Object { Split-Path -Leaf $_ }) -join ', '), $patchPlan.Sources[$pkg]) -ForegroundColor Cyan
+    }
+  }
+  else { Write-Host "Local patches: none" -ForegroundColor Cyan }
+}
+function Write-SourceSummary {
+  if ($AkousmaSource) { Write-Host "Akousma source: local checkout $AkousmaSource (built as it is, out of tree)" -ForegroundColor Cyan }
+  else { Write-Host "Akousma source: $AkousmaRepo @ $AkousmaRef" -ForegroundColor Cyan }
+  Write-Host "QtSparkle update check: $(if ($EnableQtSparkle) { 'on (-EnableQtSparkle)' } else { 'off' })" -ForegroundColor Cyan
+}
+Write-SourceSummary
+Write-PatchSummary
+# The other file/folder parameters are only made absolute here; they are checked (or created) where they are used.
+foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot', 'DownloadsPath', 'SrcPath',
+                  'BuildPath', 'PrefixPath', 'JomDir', 'TempPath', 'PipCachePath', 'CargoHome', 'RustupHome', 'LogPath', 'LogDir',
+                  'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath', 'OldPrefixPath', 'GitBinPath') {
+  Set-Variable -Name $name -Value (Resolve-UserPath (Get-Variable -Name $name -ValueOnly))
+}
+
+# ---------------------------------------------------------------------
+# The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ 4c8c65c with the Akousma changes.
+# GlibNetworkingRef: the glib-networking commit this repository's patches\glib-networking.patch was written against (see below).
+# ---------------------------------------------------------------------
+$MsvcToolsBase     = "4c8c65c6b1b2c7f2fb0fa6fc04151962d9ed0145"   # upstream 2026-10-04 'Update dependencies'
+$GlibNetworkingRef = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
+$MsvcToolsRef = $MsvcToolsBase.Substring(0, 7)
+$GitRefs = $GitRefs.Clone()   # pins are added below; don't change the caller's hashtable
+
+function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Magenta }
+function Copy-Tree($src, $dst) {
+  robocopy $src $dst /E /NFL /NDL /NJH /NJS | Out-Null   # exit codes 0-7 = success
+  if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed ($LASTEXITCODE)" }
+  $global:LASTEXITCODE = 0
+}
+
+# ---------------------------------------------------------------------
+# 0. Resolve locations (no drive letter or install folder is fixed in this script)
+# ---------------------------------------------------------------------
+# Work root: -WorkRoot if passed, else C:\ -- a fixed default, wherever this script is started from.
+# Every location below that you did not pass as a parameter hangs off it.
+function Normalize-Path([string]$p) {
+  $p = $p.Replace('/', '\')
+  if ($p -notmatch '^[A-Za-z]:\\$') { $p = $p.TrimEnd('\') }
+  return $p
+}
+function Resolve-Default([string]$Value, [string]$Default) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return (Normalize-Path $Default) }
+  return (Normalize-Path $Value)
+}
+function Test-SamePath($a, $b) {
+  if (-not (Test-Path -LiteralPath $a) -or -not (Test-Path -LiteralPath $b)) { return $false }
+  return ((Resolve-Path -LiteralPath $a).Path.TrimEnd('\') -ieq (Resolve-Path -LiteralPath $b).Path.TrimEnd('\'))
+}
+
+$WorkRoot = if ($WorkRoot) { $WorkRoot } else { 'C:\' }
+if ($WorkRoot.StartsWith('\\')) { $WorkRoot = "$env:SystemDrive\" }
+$WorkRoot = (Normalize-Path $WorkRoot).TrimEnd('\')
+
+# The dependency folders keep upstream's names (data\projects\strawberry, strawberry_msvc_<arch>_<type>), so existing
+# dependency builds and upstream's prebuilt dependency packages are used as they are.
+$ProjectRoot   = Resolve-Default $ProjectRoot   "$WorkRoot\data\projects\strawberry"
+$MsvcRoot      = Resolve-Default $MsvcRoot      "$ProjectRoot\msvc_"
+$DownloadsPath = Resolve-Default $DownloadsPath "$MsvcRoot\downloads"
+$SrcPath       = Resolve-Default $SrcPath       "$DownloadsPath"
+$BuildPath     = Resolve-Default $BuildPath     "$MsvcRoot\build_${Arch}_${BuildType}"
+$PrefixPath    = Resolve-Default $PrefixPath    "$WorkRoot\strawberry_msvc_${Arch}_${BuildType}"
+$JomDir        = Resolve-Default $JomDir        "$ProjectRoot\strawberry-msvc\tools\jom"
+$TempPath      = Resolve-Default $TempPath      "$WorkRoot\temp"
+$PipCachePath  = Resolve-Default $PipCachePath  "$WorkRoot\cache\pip"
+$CargoHome     = Resolve-Default $CargoHome     "$WorkRoot\cargo"
+$RustupHome    = Resolve-Default $RustupHome    "$WorkRoot\rustup"
+$LogPath       = Resolve-Default $LogPath       "$ProjectRoot\build.log"
+$LogDir        = Resolve-Default $LogDir        "$BuildPath\logs"
+
+# Old locations (migration sources / clean-up targets). They are skipped when they do not exist or
+# are the same folder as the new location. The C: style defaults are where upstream's script puts things.
+$OldCargoHome  = Resolve-Default $OldCargoHome  "$env:USERPROFILE\.cargo"
+$OldRustupHome = Resolve-Default $OldRustupHome "$env:USERPROFILE\.rustup"
+$OldDownloads  = Resolve-Default $OldDownloads  "$env:SystemDrive\data\projects\strawberry\msvc_\downloads"
+$OldBuildPath  = Resolve-Default $OldBuildPath  "$env:SystemDrive\data\projects\strawberry\msvc_\build_${Arch}_${BuildType}"
+$OldPrefixPath = Resolve-Default $OldPrefixPath "$env:SystemDrive\strawberry_msvc_${Arch}_${BuildType}"
+
+# Git: found on PATH (git.exe may be in cmd\, bin\ or mingw64\bin\); the build folder added to PATH is <Git root>\bin.
+if ([string]::IsNullOrWhiteSpace($GitBinPath)) {
+  $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($gitCmd) {
+    $gitDir = Split-Path -Parent $gitCmd.Source
+    $gitRoot = $null
+    $d = $gitDir
+    for ($i = 0; $i -lt 3 -and $d; $i++) {
+      if (Test-Path -LiteralPath (Join-Path $d 'usr\bin') -PathType Container) { $gitRoot = $d; break }
+      $d = Split-Path -Parent $d
+    }
+    $GitBinPath = if ($gitRoot -and (Test-Path -LiteralPath (Join-Path $gitRoot 'bin') -PathType Container)) { Join-Path $gitRoot 'bin' } else { $gitDir }
+  }
+  elseif (-not $DryRun) {
+    throw "git.exe not found on PATH. Install Git for Windows (https://git-scm.com/) or pass -GitBinPath."
+  }
+}
+if ($GitBinPath) { $GitBinPath = Normalize-Path $GitBinPath }
+
+$locations = [ordered]@{
+  ProjectRoot = $ProjectRoot; DownloadsPath = $DownloadsPath; SrcPath = $SrcPath; BuildPath = $BuildPath; PrefixPath = $PrefixPath
+  JomDir = $JomDir; TempPath = $TempPath; PipCachePath = $PipCachePath; CargoHome = $CargoHome
+  RustupHome = $RustupHome; LogPath = $LogPath; LogDir = $LogDir
+}
+
+if ($DryRun) {
+  Write-Step "Dry run: nothing is changed"
+  Write-Host ("  {0,-14} {1}" -f 'WorkRoot', $WorkRoot)
+  foreach ($k in $locations.Keys) { Write-Host ("  {0,-14} {1}" -f $k, $locations[$k]) }
+  Write-Host ("  {0,-14} {1}" -f 'GitBinPath', $(if ($GitBinPath) { $GitBinPath } else { '(git.exe not found)' }))
+  Write-Host ("  {0,-14} {1}" -f 'Akousma', $(if ($AkousmaSource) { $AkousmaSource } else { "$SrcPath\akousma  ($AkousmaRepo @ $AkousmaRef)" }))
+  Write-Host ("  {0,-14} {1}" -f 'Akousma build', "$BuildPath\akousma\build\akousma.exe")
+  Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-<arch>.exe")
+  Write-Host ("  {0,-14} {1}" -f 'Build tools', "$PSScriptRoot (strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes)")
+  return
+}
+
+# ---------------------------------------------------------------------
+# 1. Redirect temp and caches
+# ---------------------------------------------------------------------
+# Every target drive must exist: fail early with a clear message instead of a cryptic New-Item error.
+foreach ($k in $locations.Keys) {
+  $driveRoot = [System.IO.Path]::GetPathRoot($locations[$k])
+  if ($driveRoot -and -not $driveRoot.StartsWith('\\') -and -not (Test-Path -LiteralPath $driveRoot)) {
+    throw "Drive '$driveRoot' for -$k ($($locations[$k])) does not exist or is not ready. Pass a different -$k."
+  }
+}
+# The build part (and the pwsh children it starts) derive their tool search folders from the same root.
+$env:AKOUSMA_WORK_ROOT = $WorkRoot
+
+Write-Step "Redirecting temp/caches"
+# All folders are created when missing, including the log folders (Tee-Object does not create the folder of -LogPath).
+New-Item -ItemType Directory -Force $TempPath, $PipCachePath, $CargoHome, $RustupHome, $ProjectRoot, $DownloadsPath, $SrcPath, $BuildPath, $PrefixPath, $LogDir, (Split-Path -Parent $LogPath) | Out-Null
+$env:TEMP = $TempPath; $env:TMP = $TempPath
+$env:PIP_CACHE_DIR = $PipCachePath
+
+# ---------------------------------------------------------------------
+# 2. Copy existing Rust state once so cargo/cargo-c keep working
+# ---------------------------------------------------------------------
+Write-Step "Copying Rust state (if present)"
+if ((Test-Path $OldCargoHome)  -and -not (Test-SamePath $OldCargoHome  $CargoHome))  { Copy-Tree $OldCargoHome  $CargoHome }
+if ((Test-Path $OldRustupHome) -and -not (Test-SamePath $OldRustupHome $RustupHome)) { Copy-Tree $OldRustupHome $RustupHome }
+$env:CARGO_HOME = $CargoHome; $env:RUSTUP_HOME = $RustupHome
+
+# ---------------------------------------------------------------------
+# 3. Build tools: the folder this script is in
+# ---------------------------------------------------------------------
+Write-Step "Using the build tools in $PSScriptRoot"
+# A zip download carries the downloaded-file (Mark of the Web) flag, which trips the execution policy.
+foreach ($f in $PSCommandPath, (Join-Path $PSScriptRoot "CopyDLLDependencies.ps1")) { Unblock-File -LiteralPath $f -ErrorAction SilentlyContinue }
+$repoHead = if (Test-Path -LiteralPath (Join-Path $PSScriptRoot ".git")) { git -C $PSScriptRoot rev-parse --short HEAD 2>$null } else { $null }
+Write-Host ("Build tools: strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes" + $(if ($repoHead) { ", repository at $repoHead" } else { "" })) -ForegroundColor Cyan
+
+# ---------------------------------------------------------------------
+# 4. jom (parallel nmake replacement)
+# ---------------------------------------------------------------------
+Write-Step "Checking for jom"
+$jomCmd  = Get-Command jom.exe -ErrorAction SilentlyContinue
+$jomPath = if ($jomCmd) { $jomCmd.Source } else { Join-Path $JomDir "jom.exe" }
+
+if (-not (Test-Path $jomPath)) {
+  Write-Host "jom.exe not found; downloading..."
+  New-Item -ItemType Directory -Path $JomDir -Force | Out-Null
+  $jomZip = Join-Path $TempPath "jom.zip"
+  try {
+    Invoke-WebRequest -Uri "https://download.qt.io/official_releases/jom/jom.zip" -OutFile $jomZip -UseBasicParsing
+    Expand-Archive -Path $jomZip -DestinationPath $JomDir -Force
+  }
+  catch {
+    throw "Could not download jom ($_). Get it from https://download.qt.io/official_releases/jom/ and put jom.exe in '$JomDir'."
+  }
+  finally { Remove-Item $jomZip -ErrorAction SilentlyContinue }
+}
+if (-not (Test-Path $jomPath)) { throw "jom.exe still missing at '$jomPath'." }
+Write-Host "Using jom at: $jomPath"
+
+# ---------------------------------------------------------------------
+# 5. Reuse old downloads, kill leftovers, clean partial OpenSSL trees
+# ---------------------------------------------------------------------
+Write-Step "Migrating downloads and cleaning partial OpenSSL builds"
+if ((Test-Path $OldDownloads) -and ((Resolve-Path $OldDownloads).Path -ne (Resolve-Path $DownloadsPath).Path)) {
+  # Once per old folder (recorded in <DownloadsPath>\.migrated-downloads.txt), and only the downloaded files directly in it
+  # that are missing here: never the git clones upstream's layout keeps next to them (they belong in -SrcPath), never an overwrite.
+  $migratedList = Join-Path $DownloadsPath '.migrated-downloads.txt'
+  $migrated = @(if (Test-Path -LiteralPath $migratedList) { Get-Content -LiteralPath $migratedList })
+  if ($migrated -contains $OldDownloads) {
+    Write-Host "Downloads from $OldDownloads were copied by an earlier run (delete $migratedList to copy missing ones again)."
+  }
+  else {
+    $missing = @(Get-ChildItem -LiteralPath $OldDownloads -File | Where-Object {
+      $_.Name -notlike '*.part' -and -not (Test-Path -LiteralPath (Join-Path $DownloadsPath $_.Name))
+    })
+    foreach ($f in $missing) {
+      $dest = Join-Path $DownloadsPath $f.Name
+      Copy-Item -LiteralPath $f.FullName -Destination "$dest.copy.part" -Force   # renamed into place: never a half-copied archive
+      Move-Item -LiteralPath "$dest.copy.part" -Destination $dest
+    }
+    Add-Content -LiteralPath $migratedList -Value $OldDownloads
+    Write-Host "Copied $($missing.Count) missing download(s) from $OldDownloads (files only, one time)"
+  }
+}
+
+Get-Process cl, nmake, jom, mspdbsrv -ErrorAction SilentlyContinue | Stop-Process -Force
+
+$stale = foreach ($r in @($BuildPath, $OldBuildPath) | Select-Object -Unique | Where-Object { Test-Path $_ }) {
+  Get-ChildItem -Path $r -Directory -Filter "openssl-*" -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName "Configure") }
+}
+if ($stale) { $stale | ForEach-Object { Write-Host "Removing: $($_.FullName)"; Remove-Item $_.FullName -Recurse -Force } }
+else        { Write-Host "No partial OpenSSL tree found." }
+
+if ($RemoveOldCDrive) {
+  Write-Step "Removing old build tree, prefix and downloads"
+  foreach ($p in $OldBuildPath, $OldPrefixPath, $OldDownloads) {
+    if ((Test-Path $p) -and $p -notin @($BuildPath, $PrefixPath, $DownloadsPath)) { Write-Host "Removing: $p"; Remove-Item $p -Recurse -Force }
+  }
+}
+
+# ---------------------------------------------------------------------
+# 6. Build
+# ---------------------------------------------------------------------
+if ($SkipBuild) { Write-Step "Done (build skipped)."; return }
+
+# ---------------------------------------------------------------------
+# CI versions: fetch strawberry-msvc-dependencies' build.yaml (-CiVersionsRef)
+# ---------------------------------------------------------------------
+function Get-AkousmaCommitDate {
+  # The committer date of the Akousma commit being built: from the local checkout or clone, else from the GitHub API.
+  $repoDir = if ($AkousmaSource) { $AkousmaSource } else { Join-Path $SrcPath 'akousma' }
+  $ref = if ($AkousmaSource) { 'HEAD' } else { $AkousmaRef }
+  if (Test-Path -LiteralPath (Join-Path $repoDir '.git')) {
+    if (-not $AkousmaSource) { & git -C $repoDir fetch --tags --force origin 2>$null | Out-Null }
+    foreach ($spec in @($ref, "origin/$ref")) {
+      $date = & git -C $repoDir log -1 --format=%cI "$spec^{commit}" 2>$null
+      if ($LASTEXITCODE -eq 0 -and $date) { $global:LASTEXITCODE = 0; return ([datetime]([string]@($date)[0]).Trim()).ToUniversalTime() }
+    }
+    $global:LASTEXITCODE = 0
+  }
+  if ($AkousmaRepo -match 'github\.com[/:]([^/]+)/([^/]+?)(\.git)?/?$') {
+    $ghHeaders = @{ 'User-Agent' = 'Build-Akousma.ps1'; 'Accept' = 'application/vnd.github+json' }
+    if ($env:GITHUB_TOKEN) { $ghHeaders['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+    $commit = Invoke-RestMethod -Headers $ghHeaders -Uri "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/commits/$ref"
+    return ([datetime]$commit.commit.committer.date).ToUniversalTime()
+  }
+  throw "-CiVersionsRef auto: could not find the date of Akousma @ $ref. Pass -CiVersionsRef master or a strawberry-msvc-dependencies commit."
+}
+if (-not $CiVersionsFile -and $CiVersionsRef) {
+  $depsRepo = "strawberrymusicplayer/strawberry-msvc-dependencies"
+  $depsRef  = $CiVersionsRef
+  if ($depsRef -eq 'auto') {
+    Write-Step "Resolving the dependency versions that were current when the Akousma commit was made"
+    $until = (Get-AkousmaCommitDate).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ghHeaders = @{ 'User-Agent' = 'Build-Akousma.ps1'; 'Accept' = 'application/vnd.github+json' }
+    if ($env:GITHUB_TOKEN) { $ghHeaders['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+    $dc = @(Invoke-RestMethod -Headers $ghHeaders -Uri "https://api.github.com/repos/$depsRepo/commits?path=.github/workflows/build.yaml&until=$until&per_page=1")
+    if ($dc.Count -eq 0 -or -not $dc[0].sha) { throw "No build.yaml commit found in $depsRepo before $until" }
+    $depsRef = $dc[0].sha
+    Write-Host "The Akousma commit was made $until; using $depsRepo build.yaml @ $($depsRef.Substring(0, 7))"
+  }
+  Write-Step "Fetching dependency versions (build.yaml @ $depsRef)"
+  $ciUrl  = "https://raw.githubusercontent.com/$depsRepo/$depsRef/.github/workflows/build.yaml"
+  $ciName = "build." + (($depsRef -replace '[^A-Za-z0-9._-]', '_')) + ".yaml"
+  $CiVersionsFile = Join-Path $TempPath $ciName
+  Invoke-WebRequest -Uri $ciUrl -OutFile $CiVersionsFile -UseBasicParsing
+  Write-Host "Saved: $CiVersionsFile"
+}
+
+$sourceText = if ($AkousmaSource) { "Akousma from $AkousmaSource" } else { "Akousma @ $AkousmaRef" }
+Write-Step "Building ($BuildType / $Arch, $(if ($Jobs -gt 0) { $Jobs } else { [Environment]::ProcessorCount }) jobs, $(if ($ParallelPackages -le 0) { "auto" } else { $ParallelPackages }) packages at once, build tools @ $MsvcToolsRef + Akousma, $sourceText) -> $PrefixPath"
+$jomDirInUse = Split-Path $jomPath
+# Prepend the build folders without duplicates: an entry already on Path (e.g. left by an older run of this script in this
+# window) is moved to the front rather than added again, and repeated entries are dropped (first one wins, so lookup order is kept).
+function Join-PathList([string[]]$Entries) {
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $kept = foreach ($entry in $Entries) {
+    $t = "$entry".Trim()
+    if ($t -and $seen.Add($t.TrimEnd('\'))) { $t }
+  }
+  return ($kept -join ';')
+}
+$env:Path = Join-PathList (@($jomDirInUse, "$CargoHome\bin", "$PrefixPath\bin", $GitBinPath) + ($env:Path -split ';'))
+Set-Location $PSScriptRoot
+
+$buildArgs = @{
+  BuildType         = $BuildType
+  Arch              = $Arch
+  DownloadsPath     = $DownloadsPath.Replace('\', '/')
+  SrcPath           = $SrcPath.Replace('\', '/')
+  BuildPath         = $BuildPath.Replace('\', '/')
+  PrefixPath        = $PrefixPath.Replace('\', '/')
+  Jobs              = $Jobs
+  ParallelPackages  = $ParallelPackages
+  jom_path          = $jomDirInUse
+  LogDir            = $LogDir.Replace('\', '/')
+  AkousmaRepo       = $AkousmaRepo
+}
+if ($AkousmaSource)          { $buildArgs.AkousmaSource    = $AkousmaSource.Replace('\', '/') }
+else                         { $GitRefs['akousma']         = $AkousmaRef }
+if ($EnableQtSparkle)        { $buildArgs.EnableQtSparkle  = $true }
+if ($PackagePatches.Count -gt 0) {
+  $buildArgs.package_patches = @{}
+  foreach ($pkg in $PackagePatches.Keys) {
+    $buildArgs.package_patches[$pkg] = [string[]]@(foreach ($patch in $PackagePatches[$pkg]) {
+      if (-not (Test-Path -LiteralPath $patch)) { throw "Patch for $pkg not found: $patch" }
+      (Resolve-Path -LiteralPath $patch).Path
+    })
+  }
+}
+if ($ForceRebuild.Count -gt 0) { $buildArgs.ForceRebuild     = $ForceRebuild }
+if ($NoChangeDetection)      { $buildArgs.NoChangeDetection = $true }
+if ($RebuildDependents)      { $buildArgs.RebuildDependents = $true }
+if ($Only.Count -gt 0)       { $buildArgs.Only             = $Only }
+if ($Skip.Count -gt 0)       { $buildArgs.Skip             = $Skip }
+if ($List)                   { $buildArgs.List             = $true }
+if ($VersionsFile)           { $buildArgs.VersionsFile     = $VersionsFile }
+if ($CiVersionsFile)         { $buildArgs.CiVersionsFile   = $CiVersionsFile }
+if ($VersionOverrides.Count) { $buildArgs.VersionOverrides = $VersionOverrides }
+# glib-networking is cloned from git (upstream's script builds master, unpinned) and patched with the build tools'
+# patches\glib-networking.patch (OpenSSL threading fixes), which upstream regenerates whenever glib-networking master moves.
+# So the right commit depends on the build tools commit: pin the commit this repository's patch was written against
+# ($GlibNetworkingRef above; the patch's 'index' blob hashes match it, and it applies with no offset or fuzz). For upstream
+# 4c8c65c (and 1dfe51d) that is 2616c9e; 34e85f6 needed e23c430 (2.90.alpha). When you merge a newer upstream commit that
+# changes patches\glib-networking.patch, update $GlibNetworkingRef to match.
+# The pin wins over a 40-char glib_networking_version in the CI build.yaml: that one goes with the patch CI had at the time,
+# which may not be this repository's. -GitRefs @{ 'glib-networking' = '<commit>' } overrides all of this.
+$ciGlibNet = if ($CiVersionsFile -and (Test-Path -LiteralPath $CiVersionsFile) -and
+  ((Get-Content -Raw -LiteralPath $CiVersionsFile) -match "(?m)^\s+glib_networking_version:\s*'?([0-9a-f]{40})\b")) { $Matches[1] } else { "" }
+if (-not $GitRefs.ContainsKey('glib-networking')) {
+  $GitRefs['glib-networking'] = $GlibNetworkingRef
+  if ($ciGlibNet -and $ciGlibNet -ne $GlibNetworkingRef) {
+    Write-Host "glib-networking: using $($GlibNetworkingRef.Substring(0, 7)) (the base of glib-networking.patch at $MsvcToolsRef), not CI's $($ciGlibNet.Substring(0, 7))." -ForegroundColor Cyan
+  }
+}
+$buildArgs.GitRefs = $GitRefs
+
+# The build part exports its resolved git refs as $env:SMB_GIT_REFS_JSON for its child processes, and reloads that variable
+# when no refs are passed in. Since it runs in this session, a previous run's refs would leak into this one.
+# Same for the patch and clean lists it hands its child processes.
+Remove-Item Env:SMB_GIT_REFS_JSON, Env:SMB_VERSION_OVERRIDES_JSON, Env:SMB_PACKAGE_PATCHES_JSON, Env:SMB_CLEAN_PACKAGES -ErrorAction SilentlyContinue
+
+$ErrorActionPreference = "Continue"   # native tools write to stderr; don't abort on that
+& { Write-SourceSummary; Write-PatchSummary; & $PSCommandPath @buildArgs -inner_build } *>&1 | Tee-Object $LogPath
+}
+finally {
+  Set-Location -LiteralPath $StartLocation
+  # Put the environment back exactly as it was: drop variables added by this run, restore changed/removed ones.
+  foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
+    if (-not $StartEnv.ContainsKey([string]$name)) { [Environment]::SetEnvironmentVariable([string]$name, $null) }
+  }
+  foreach ($name in $StartEnv.Keys) {
+    if ([Environment]::GetEnvironmentVariable($name) -cne $StartEnv[$name]) { [Environment]::SetEnvironmentVariable($name, $StartEnv[$name]) }
+  }
+}
+return
+}
+#endregion
+
+#region Build
+# The build part: run by the preparation above (-inner_build) and by the parallel build's child processes (-child_build).
+# The rest of this script is upstream's StrawberryMSVCBuild.ps1 with the Akousma changes; its variables keep upstream's names.
+$build_type = $BuildType
+$parallel_packages = if ($PSBoundParameters.ContainsKey('ParallelPackages')) { $ParallelPackages } else { 1 }
+$downloads_path = $DownloadsPath
+$src_path = $SrcPath
+$build_path = $BuildPath
+$prefix_path = $PrefixPath
+$log_dir = $LogDir
+$versions_file = $VersionsFile
+$ci_versions_file = $CiVersionsFile
+$version_overrides = $VersionOverrides
+$git_refs = $GitRefs
+$force_rebuild = $ForceRebuild
+$no_change_detection = $NoChangeDetection
+$rebuild_dependents = $RebuildDependents
+$akousma_repo = $AkousmaRepo
+$akousma_source = if ($AkousmaSource) { $AkousmaSource.Replace('\', '/').TrimEnd('/') } else { "" }
+$enable_qtsparkle = [bool]$EnableQtSparkle
 
 # --- patched: jobs default, hashtables handed down by the parallel scheduler ---
 if ($jobs -le 0) { $jobs = [Environment]::ProcessorCount }
@@ -167,8 +744,7 @@ if ($version_overrides.Count -eq 0 -and $env:SMB_VERSION_OVERRIDES_JSON) {
 if ($git_refs.Count -eq 0 -and $env:SMB_GIT_REFS_JSON) {
   $git_refs = $env:SMB_GIT_REFS_JSON | ConvertFrom-Json -AsHashtable
 }
-if ($strawberry_ref) { $git_refs['strawberry'] = $strawberry_ref }
-# --- patched: local patches per package (wrapper: patches\ folder, -StrawberryPatch, -GstGoodPatch) ---
+# --- patched: local patches per package (local-patches\ folder, -GstGoodPatch) ---
 if ($child_build -and $package_patches.Count -eq 0 -and $env:SMB_PACKAGE_PATCHES_JSON) {
   $package_patches = $env:SMB_PACKAGE_PATCHES_JSON | ConvertFrom-Json -AsHashtable
 }
@@ -176,11 +752,6 @@ $smb_package_patches = @{}
 foreach ($k in @($package_patches.Keys)) {
   $patch_list = @($package_patches[$k] | Where-Object { $_ } | ForEach-Object { [string]$_ })
   if ($patch_list.Count -gt 0) { $smb_package_patches[[string]$k] = $patch_list }
-}
-if (-not $child_build) {
-  # Older wrappers passed these two environment variables instead.
-  if (-not $smb_package_patches.ContainsKey('strawberry') -and $env:SMB_STRAWBERRY_PATCH) { $smb_package_patches['strawberry'] = @($env:SMB_STRAWBERRY_PATCH -split ';' | Where-Object { $_ }) }
-  if (-not $smb_package_patches.ContainsKey('gst-plugins-good') -and $env:SMB_GST_GOOD_PATCH) { $smb_package_patches['gst-plugins-good'] = @($env:SMB_GST_GOOD_PATCH) }
 }
 
 function AppendPathToEnvPath() {
@@ -220,12 +791,12 @@ function RemovePathFromEnvPath() {
 }
 
 # --- patched: no fixed drive letters or install folders ---------------------------------
-# Defaults hang off STRAWBERRY_ROOT, else C: (upstream's default, whatever drive this script is on). Tools are found
+# Defaults hang off AKOUSMA_WORK_ROOT (set from -WorkRoot), else C: (upstream's default, whatever drive this script is on). Tools are found
 # on PATH first, then via registry (Git, Python, 7-Zip, CMake), then in the usual install
 # folders under Program Files / LOCALAPPDATA\Programs / the system drive / the work drive,
 # then in any folders listed in SMB_TOOL_PATHS (';'-separated).
-function Get-StrawberryWorkRoot {
-  if ($env:STRAWBERRY_ROOT) { return $env:STRAWBERRY_ROOT.Replace('\', '/').TrimEnd('/') }
+function Get-WorkRoot {
+  if ($env:AKOUSMA_WORK_ROOT) { return $env:AKOUSMA_WORK_ROOT.Replace('\', '/').TrimEnd('/') }
   return 'C:'
 }
 
@@ -252,7 +823,7 @@ function Get-RegistryString {
 }
 
 function Get-ToolSearchRoots {
-  $work = Get-StrawberryWorkRoot
+  $work = Get-WorkRoot
   return @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA/Programs", "$env:SystemDrive/", "$work/") |
     Where-Object { $_ } | ForEach-Object { $_.Replace('\', '/').TrimEnd('/') } | Select-Object -Unique
 }
@@ -386,7 +957,7 @@ function Import-CIVersions {
 $ErrorActionPreference = "Stop"
 
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "Strawberry MSVC Dependencies Build Script" -ForegroundColor Green
+Write-Host "Akousma MSVC Build Script" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
@@ -499,7 +1070,7 @@ else {
 
 # Set paths
 # Use default build path if not specified
-$work_root = Get-StrawberryWorkRoot
+$work_root = Get-WorkRoot
 if ([string]::IsNullOrEmpty($downloads_path)) {
   $downloads_path = "$work_root/data/projects/strawberry/msvc_/downloads"
 }
@@ -793,10 +1364,13 @@ function SyncGitRepository {
     [string]$url,
 
     [Parameter(Mandatory=$true)]
-    [string]$destination_path
+    [string]$destination_path,
+
+    [Parameter(Mandatory=$false)]
+    [string]$repo_name = ""
   )
 
-  $repo_name = Split-Path $url -Leaf
+  if (-not $repo_name) { $repo_name = (Split-Path $url -Leaf) -replace '\.git$', '' }
   $repo_path = Join-Path $destination_path $repo_name
   $pinned_ref = $git_refs[$repo_name]
 
@@ -928,7 +1502,7 @@ function GetGitRepoUrls {
     'tinysvcmdns' = "https://github.com/Pro/tinysvcmdns"
     'yasm' = "https://github.com/yasm/yasm"
     'pe-util' = "https://github.com/gsauthof/pe-util"
-    'strawberry' = "https://github.com/strawberrymusicplayer/strawberry"
+    'akousma' = $akousma_repo
   }
   return $git_repo_urls
 }
@@ -1000,7 +1574,7 @@ function CloneGitRepo {
       throw "git repository '$git_repo_name' not found in dependency configuration"
     }
     $git_repo_url = $git_repo_urls[$git_repo_name]
-    SyncGitRepository -url $git_repo_url -destination_path $src_path
+    SyncGitRepository -url $git_repo_url -destination_path $src_path -repo_name $git_repo_name
     Write-Host "✓ Repository $git_repo_name is available" -ForegroundColor Green
   }
   catch {
@@ -3297,58 +3871,104 @@ function Build-PeUtil {
   }
 }
 
-function Build-Strawberry {
-  Write-Host "Building strawberry" -ForegroundColor Yellow
+function Get-AkousmaSourceId {
+  # The source id of a local Akousma checkout (-AkousmaSource), for change detection: its commit, plus a hash of the uncommitted
+  # changes (tracked changes and untracked files that are not ignored), so editing a file rebuilds Akousma.
+  $sha = & git -C $akousma_source rev-parse -q --verify "HEAD^{commit}" 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $sha) { $global:LASTEXITCODE = 0; return "local $akousma_source (not a git checkout)" }
+  $sha = ([string]@($sha)[0]).Trim()
+  $diff = (& git -C $akousma_source diff --binary HEAD 2>$null) -join "`n"
+  $untracked = @(& git -C $akousma_source ls-files --others --exclude-standard 2>$null)
+  $global:LASTEXITCODE = 0
+  if (-not $diff -and $untracked.Count -eq 0) { return $sha }
+  $state = [System.Text.StringBuilder]::new($diff)
+  foreach ($f in ($untracked | Sort-Object)) {
+    $path = Join-Path $akousma_source $f
+    if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$state.Append("`n$f $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)") }
+  }
+  return "$sha+local-$((Get-TextSha256 $state.ToString()).Substring(0, 12))"
+}
+
+function Get-AkousmaCMakeArgs {
+  $enable_win32_console = if ($build_type -eq "debug") { "ON" } else { "OFF" }
+  # QtSparkle's only feed is upstream Strawberry's, which offers Strawberry releases: off unless -EnableQtSparkle.
+  $qtsparkle = if ($enable_qtsparkle) { "ON" } else { "OFF" }
+  return @(
+    "-DARCH=$arch",
+    "-DENABLE_TRANSLATIONS=ON",
+    "-DBUILD_WERROR=ON",
+    "-DENABLE_WIN32_CONSOLE=$enable_win32_console",
+    "-DICU_ROOT=$prefix_path",
+    "-DENABLE_AUDIOCD=OFF",
+    "-DENABLE_MTP=OFF",
+    "-DENABLE_GPOD=OFF",
+    "-DENABLE_QTSPARKLE=$qtsparkle"
+  )
+}
+
+function Get-AkousmaSourceDir {
+  # Where the Akousma sources are built from: the local checkout, or the build copy of the clone.
+  if ($akousma_source) { return $akousma_source }
+  return "$build_path/akousma"
+}
+
+function Build-Akousma {
+  Write-Host "Building akousma" -ForegroundColor Yellow
   Push-Location $build_path
   try {
-    CloneGitRepo -git_repo_name "strawberry"
-    if (-not (Test-Path "strawberry")) {
-      RecursiveCopy "$src_path/strawberry" "strawberry"
+    if ($akousma_source) {
+      # A local checkout (-AkousmaSource): built as it is, uncommitted changes included, out of tree in <build_path>/akousma/build.
+      # The checkout itself is not changed. The existing build folder is reused, so only what changed is recompiled.
+      Write-Host "Akousma source: $akousma_source ($(Get-AkousmaSourceId))" -ForegroundColor Cyan
+      New-Item -ItemType Directory -Path "akousma" -Force | Out-Null
+      Push-Location "akousma"
+      try {
+        CMakeBuild -source_path $akousma_source -additional_args (Get-AkousmaCMakeArgs)
+      }
+      finally {
+        Pop-Location
+      }
     }
-    Push-Location "strawberry"
-    try {
-      # Source = exactly <commit> + the local patches, in order (wrapper: patches\strawberry-*.patch / -StrawberryPatch): files
-      # an earlier run patched (or that were edited by hand) are reset first, so a removed or edited patch is undone too.
-      # Files that end up identical keep their old timestamps, so the incremental CMake build below (the existing build
-      # folder is reused) only recompiles what really changed.
-      $strawberry_saved = Sync-GitBuildCopy -src_repo "$src_path/strawberry" -name "strawberry"
-      Invoke-LocalPatches -root "." -component "strawberry"
-      Restore-UnchangedTimestamps $strawberry_saved "strawberry"
-      $enable_win32_console = if ($build_type -eq "debug") { "ON" } else { "OFF" }
-      CMakeBuild -additional_args @(
-          "-DARCH=$arch",
-          "-DENABLE_TRANSLATIONS=ON",
-          "-DBUILD_WERROR=ON",
-          "-DENABLE_WIN32_CONSOLE=$enable_win32_console",
-          "-DICU_ROOT=$prefix_path",
-          "-DENABLE_AUDIOCD=OFF",
-          "-DENABLE_MTP=OFF",
-          "-DENABLE_GPOD=OFF"
-        )
-      Write-Host "Strawberry built successfully!" -ForegroundColor Green
+    else {
+      # The git repository (-AkousmaRepo, cloned to <src_path>/akousma) at -AkousmaRef, built in a copy of the clone.
+      CloneGitRepo -git_repo_name "akousma"
+      if (-not (Test-Path "akousma")) {
+        RecursiveCopy "$src_path/akousma" "akousma"
+      }
+      Push-Location "akousma"
+      try {
+        # Source = exactly the commit: files that were changed in the build copy (by hand or by an earlier version of these build
+        # tools, which patched strawberry here) are reset first. Files that end up identical keep their old timestamps, so the
+        # incremental CMake build below (the existing build folder is reused) only recompiles what really changed.
+        $akousma_saved = Sync-GitBuildCopy -src_repo "$src_path/akousma" -name "akousma"
+        Restore-UnchangedTimestamps $akousma_saved "akousma"
+        CMakeBuild -additional_args (Get-AkousmaCMakeArgs)
+      }
+      finally {
+        Pop-Location
+      }
     }
-    finally {
-      Pop-Location
-    }
+    Write-Host "Akousma built successfully!" -ForegroundColor Green
   }
   finally {
     Pop-Location
   }
 }
 
-function Build-StrawberrySetup {
-  Write-Host "Creating StrawberrySetup" -ForegroundColor Yellow
+function Build-AkousmaSetup {
+  Write-Host "Creating AkousmaSetup" -ForegroundColor Yellow
+  $akousma_src_dir = Get-AkousmaSourceDir
   Push-Location $build_path
   try {
-    New-Item -Path "StrawberrySetup" -ItemType Directory -Force | Out-Null
-    Push-Location "StrawberrySetup"
+    New-Item -Path "AkousmaSetup" -ItemType Directory -Force | Out-Null
+    Push-Location "AkousmaSetup"
     try {
       New-Item -Path @('platforms', 'styles', 'imageformats', 'tls', 'sqldrivers', 'gio-modules', 'gstreamer-plugins') -ItemType Directory -Force
-      Copy-Item -Path "$build_path/strawberry/build/strawberry.exe", `
-                      "$build_path/strawberry/build/strawberry.nsi", `
-                      "$build_path/strawberry/COPYING", `
-                      "$build_path/strawberry/dist/windows/*.ico", `
-                      "$build_path/strawberry/dist/windows/*.nsh" `
+      Copy-Item -Path "$build_path/akousma/build/akousma.exe", `
+                      "$build_path/akousma/build/akousma.nsi", `
+                      "$akousma_src_dir/COPYING", `
+                      "$akousma_src_dir/dist/windows/*.ico", `
+                      "$akousma_src_dir/dist/windows/*.nsh" `
                       "." -Force
       Copy-Item "$prefix_path/plugins/platforms/*.dll" "./platforms/" -Force
       Copy-Item "$prefix_path/plugins/styles/*.dll" "./styles/" -Force
@@ -3361,8 +3981,9 @@ function Build-StrawberrySetup {
       & "$PSScriptRoot/CopyDLLDependencies.ps1" -Copy -DestDir "./" -InDir "./" -InDir "./platforms" -InDir "./styles" -InDir "./imageformats" -InDir "./tls" -InDir "./sqldrivers" -InDir "./gio-modules" -InDir "./gstreamer-plugins" -RecursiveSrcDir "$prefix_path/bin"
       DownloadPackage -package_name "vc-redist-${arch_short}"
       Copy-Item "$downloads_path/vc_redist.${arch_short}.exe" "." -Force
-      & makensis strawberry.nsi
-      Write-Host "Strawberry setup built successfully!" -ForegroundColor Green
+      & makensis akousma.nsi
+      if ($LASTEXITCODE -ne 0) { throw "makensis akousma.nsi failed" }
+      Write-Host "AkousmaSetup built successfully: $((Get-ChildItem -Filter 'AkousmaSetup*.exe' | Select-Object -First 1).FullName)" -ForegroundColor Green
     }
     finally {
       Pop-Location
@@ -3378,7 +3999,7 @@ function Build-StrawberrySetup {
 
 function Get-PackageDependencies {
   # Conservative build-order constraints. Anything not listed here has no
-  # constraints beyond pkgconf. strawberry / strawberry-setup wait for everything.
+  # constraints beyond pkgconf. akousma / akousma-setup wait for everything.
   $codecs = @("zlib", "bzip2", "xz", "libpng", "libjpeg-turbo", "ogg", "vorbis", "opus", "speex", "flac", "wavpack", "mpg123", "lame", "fdk-aac", "faad2", "faac", "libopenmpt", "libgme", "libbs2b", "libwebp", "openssl")
   $qt = @("zlib", "openssl", "libpng", "libjpeg-turbo", "pcre2", "icu4c", "sqlite", "freetype", "harfbuzz", "bzip2", "brotli", "xz")
   return @{
@@ -3466,12 +4087,12 @@ function Get-PackageWeight {
   [CmdletBinding()]
   param([Parameter(Mandatory=$true)][string]$name)
   $w = @{
-    'qtbase' = 14; 'ffmpeg' = 9; 'gst-plugins-rs' = 7; 'strawberry' = 7; 'gst-plugins-bad' = 6
+    'qtbase' = 14; 'ffmpeg' = 9; 'gst-plugins-rs' = 7; 'akousma' = 7; 'gst-plugins-bad' = 6
     'icu4c' = 5; 'qttools' = 4; 'boost' = 4; 'glib' = 4; 'openssl' = 4
     'qtgrpc' = 3; 'gst-plugins-good' = 3; 'gst-plugins-base' = 3; 'gstreamer' = 3; 'gst-libav' = 3
     'protobuf' = 3; 'abseil-cpp' = 3; 'libprojectm' = 3
     'harfbuzz' = 2; 'libxml2' = 2; 'libopenmpt' = 2; 'qtimageformats' = 2; 'taglib' = 2
-    'freetype' = 2; 'pcre2' = 2; 'strawberry-setup' = 2
+    'freetype' = 2; 'pcre2' = 2; 'akousma-setup' = 2
   }
   if ($w.ContainsKey($name)) { return [int]$w[$name] }
   return 1
@@ -3518,7 +4139,7 @@ function Invoke-ParallelQueue {
   #    GStreamer / ffmpeg chains start as early as their dependencies allow.
   #  - Cores are handed out from a shared budget (-jobs) when a package starts, weighted by package
   #    cost: a package that starts while others run gets the free share, one that starts alone
-  #    (the serial tail: qtbase -> qttools -> strawberry ...) gets every core.
+  #    (the serial tail: qtbase -> qttools -> akousma ...) gets every core.
   #  - Never fewer than jobs/4 cores are offered to a new package, so a package that is busy in a
   #    serial phase (configure, extract, link) cannot keep the next ready one waiting.
   [CmdletBinding()]
@@ -3536,8 +4157,8 @@ function Invoke-ParallelQueue {
   $graph = Get-PackageDependencies
   $deps = @{}
   foreach ($c in $queue) {
-    if ($c -eq "strawberry") { $deps[$c] = @($queue | Where-Object { $_ -ne "strawberry" -and $_ -ne "strawberry-setup" }) }
-    elseif ($c -eq "strawberry-setup") { $deps[$c] = @($queue | Where-Object { $_ -ne "strawberry-setup" }) }
+    if ($c -eq "akousma") { $deps[$c] = @($queue | Where-Object { $_ -ne "akousma" -and $_ -ne "akousma-setup" }) }
+    elseif ($c -eq "akousma-setup") { $deps[$c] = @($queue | Where-Object { $_ -ne "akousma-setup" }) }
     elseif ($graph.ContainsKey($c)) { $deps[$c] = @($graph[$c] | Where-Object { $queue -contains $_ }) }
     else {
       Write-Warning "No dependency info for '$c'; it will run after everything queued before it."
@@ -3591,7 +4212,7 @@ function Invoke-ParallelQueue {
 
       foreach ($c in $batch) {
         $avail = [Math]::Max($jobs - $allocated, [int][Math]::Ceiling($jobs / 4))
-        # Heavy packages (weight >= 5: qtbase, ffmpeg, gst-plugins-rs/bad, icu4c, strawberry) keep their core
+        # Heavy packages (weight >= 5: qtbase, ffmpeg, gst-plugins-rs/bad, icu4c, akousma) keep their core
         # count until they exit, so they never start with less than half the machine. Light packages spend most
         # of their time in serial phases, so a little oversubscription costs nothing and keeps cores busy.
         $floor = if ($weight[$c] -ge 5) { [int][Math]::Ceiling($jobs / 2) } else { 2 }
@@ -3608,6 +4229,9 @@ function Invoke-ParallelQueue {
         if ($versions_file) { $child_args += @("-versions_file", $versions_file) }
         if ($ci_versions_file) { $child_args += @("-ci_versions_file", $ci_versions_file) }
         if ($jom_path) { $child_args += @("-jom_path", $jom_path) }
+        $child_args += @("-akousma_repo", $akousma_repo)
+        if ($akousma_source) { $child_args += @("-akousma_source", $akousma_source) }
+        if ($enable_qtsparkle) { $child_args += @("-enable_qtsparkle") }
         $log = Join-Path $logs "$c.log"
         $p = Start-Process -FilePath $pwsh -ArgumentList $child_args -NoNewWindow -PassThru `
                -RedirectStandardOutput $log -RedirectStandardError "$log.err"
@@ -3660,10 +4284,10 @@ function Invoke-ParallelQueue {
 #   - build type / arch
 #   - its sources: the download URL (it carries the version) or the git commit of each repository the recipe clones
 #   - sha256 of the build tools' own patches its recipe applies ($patch_path/*.patch)
-#   - sha256 and order of the local patches for it (-package_patches; the wrapper fills it from patches\, -StrawberryPatch, -GstGoodPatch)
+#   - sha256 and order of the local patches for it (-package_patches; the preparation part fills it from local-patches\, -GstGoodPatch)
 #   - the text of its build recipe (its line in the build switch + its Build-* function), so a new build tools ref rebuilds what it changed
 # A package is skipped when its output marker exists and its stamp matches. Otherwise it is rebuilt: dependencies in a clean copy
-# (fresh extract / copy, new build folder), strawberry incrementally (source reset to the commit + patches re-applied, then the
+# (fresh extract / copy, new build folder), akousma incrementally (source reset to the commit, or a local checkout as it is, then the
 # existing CMake build folder is reused, so only what really changed is recompiled). See Get-BuildPlan for the rules.
 
 $smb_script_file = $PSCommandPath
@@ -3674,7 +4298,7 @@ $smb_embedded_packages = @('utfcpp', 'sparsehash', 'boost')
 # Build tools: never a reason to rebuild dependents.
 $smb_tool_packages = @('pkgconf', 'yasm')
 # Extra folders (in build_path) a clean rebuild removes, besides <build_path>/<package> and the folders the recipe extracts/configures.
-$smb_extra_build_dirs = @{ 'strawberry-setup' = @('StrawberrySetup') }
+$smb_extra_build_dirs = @{ 'akousma-setup' = @('AkousmaSetup') }
 $script:smb_component = ""
 $script:smb_clean_packages = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 if ($env:SMB_CLEAN_PACKAGES) { foreach ($p in $env:SMB_CLEAN_PACKAGES -split ';') { if ($p) { [void]$script:smb_clean_packages.Add($p) } } }
@@ -3759,8 +4383,8 @@ function Get-PackageMarkers {
     "tinysvcmdns"         = "$prefix_path/lib/pkgconfig/tinysvcmdns.pc"
     "pe-parse"            = "$prefix_path/lib/cmake/pe-parse/pe-parse-config.cmake"
     "pe-util"             = "$prefix_path/bin/peldd.exe"
-    "strawberry"          = "$build_path/strawberry/build/strawberry.exe"
-    "strawberry-setup"    = "$build_path/StrawberrySetup/StrawberrySetup*.exe"
+    "akousma"             = "$build_path/akousma/build/akousma.exe"
+    "akousma-setup"       = "$build_path/AkousmaSetup/AkousmaSetup*.exe"
   }
 }
 
@@ -3862,6 +4486,7 @@ function Resolve-GitSourceId {
   # No network unless -sync and a pinned ref is not in the clone yet (then the clone is fetched, like the build would).
   # Unpinned clones are not pulled here; the build pulls them as before, and the stamp records the commit it built.
   param([string]$repo, [switch]$sync)
+  if ($repo -eq 'akousma' -and $akousma_source) { return (Get-AkousmaSourceId) }
   $path = "$($script:src_path)/$repo"
   $ref = $git_refs[$repo]
   for ($attempt = 0; $attempt -lt 2; $attempt++) {
@@ -3892,7 +4517,7 @@ function Get-PackageFingerprint {
   }
   $local_patches = @(foreach ($p in @(Get-LocalPatches $name)) { [ordered]@{ name = (Split-Path $p -Leaf); sha256 = (Get-NormalizedFileSha256 $p) } })
   $parts = [ordered]@{
-    config        = "$($build_type.ToLowerInvariant())/$arch"
+    config        = "$($build_type.ToLowerInvariant())/$arch" + $(if ($name -eq 'akousma') { " " + ((Get-AkousmaCMakeArgs) -join ' ') } else { "" })
     sources       = $sources
     tool_patches  = $tool_patches
     local_patches = $local_patches
@@ -4000,11 +4625,11 @@ function Test-LegacyPatchStamp([string]$name) {
   return (Test-Path -LiteralPath "$prefix_path/lib/gstreamer-1.0/.gst-good-patch-$hash")
 }
 
-function Test-StrawberryRefMismatch {
-  # -no_change_detection only: the old check (a pinned strawberry ref that the build tree is not at).
-  if (-not $git_refs.ContainsKey('strawberry') -or -not (Test-Path "$build_path/strawberry/.git")) { return $false }
-  $have = & git -C "$build_path/strawberry" rev-parse HEAD 2>$null
-  $want = & git -C "$build_path/strawberry" rev-parse --verify "$($git_refs['strawberry'])^{commit}" 2>$null
+function Test-AkousmaRefMismatch {
+  # -no_change_detection only: the old check (a pinned akousma ref that the build tree is not at). Not for a local checkout.
+  if ($akousma_source -or -not $git_refs.ContainsKey('akousma') -or -not (Test-Path "$build_path/akousma/.git")) { return $false }
+  $have = & git -C "$build_path/akousma" rev-parse HEAD 2>$null
+  $want = & git -C "$build_path/akousma" rev-parse --verify "$($git_refs['akousma'])^{commit}" 2>$null
   $global:LASTEXITCODE = 0
   return -not ($have -and $want -and $have -eq $want)
 }
@@ -4018,7 +4643,10 @@ function Assert-LocalPatches([System.Collections.IDictionary]$markers) {
   foreach ($name in @($smb_package_patches.Keys)) {
     if (-not $markers.Contains($name)) { throw "Local patches were given for '$name', which this build script does not build. Known packages: $($markers.Keys -join ', ')" }
     $recipe = (Get-SmbRecipes)[$name]
-    if ($name -ne 'strawberry' -and -not ($recipe -and $recipe.UsesCMakeOrMeson)) {
+    if ($name -in 'akousma', 'akousma-setup') {
+      throw "Local patches for '$name' are not applied: Akousma's changes are commits in the Akousma repository (-AkousmaRepo / -AkousmaSource)."
+    }
+    if (-not ($recipe -and $recipe.UsesCMakeOrMeson)) {
       throw "Local patches for '$name' can't be applied automatically: its recipe doesn't build through CMakeBuild / MesonBuild (where local patches are applied). Patches: $(@(Get-LocalPatches $name) -join ', ')"
     }
     foreach ($p in @(Get-LocalPatches $name)) { if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "Patch for $name not found: $p" } }
@@ -4028,11 +4656,11 @@ function Assert-LocalPatches([System.Collections.IDictionary]$markers) {
 function Get-BuildPlan {
   # Decides, per package: skip (up to date), adopt (existing output, no stamp yet: stamp it, don't rebuild), build (no output),
   # rebuild (stamp differs / forced / a dependency needs it), or excluded (-only / -skip).
-  #  - Rebuilt dependencies get a clean copy; strawberry is rebuilt incrementally (clean only with -force_rebuild).
-  #  - First run with stamps: existing output is adopted, except strawberry (always re-synced to commit + patches, which is cheap
+  #  - Rebuilt dependencies get a clean copy; akousma is rebuilt incrementally (clean only with -force_rebuild).
+  #  - First run with stamps: existing output is adopted, except akousma (always re-synced to its commit, which is cheap
   #    because files that end up unchanged keep their timestamps) and a package with local patches that can't be verified.
   #  - A rebuild of a header-only package rebuilds its direct dependents (all direct dependents with -rebuild_dependents);
-  #    any rebuild relinks strawberry (incremental) and re-creates StrawberrySetup.
+  #    any rebuild relinks akousma (incremental) and re-creates AkousmaSetup.
   #  - Dependents a rebuild needs but that -only / -skip leave out get a pending stamp, so the next run rebuilds them.
   param(
     [System.Collections.IDictionary]$markers,
@@ -4061,7 +4689,7 @@ function Get-BuildPlan {
     if ($no_change_detection) {
       if ($forced) { $e.Action = 'rebuild'; $e.Clean = $true; $e.Reasons.Add('forced (-ForceRebuild)') }
       elseif (-not $has_output) { $e.Action = 'build'; $e.Reasons.Add('no output') }
-      elseif ($name -eq 'strawberry' -and (Test-StrawberryRefMismatch)) { $e.Action = 'rebuild'; $e.Reasons.Add("build tree is not at $($git_refs['strawberry'])") }
+      elseif ($name -eq 'akousma' -and (Test-AkousmaRefMismatch)) { $e.Action = 'rebuild'; $e.Reasons.Add("build tree is not at $($git_refs['akousma'])") }
       else { $e.Reasons.Add('output exists (change detection off)') }
       $e.Own = $e.Action -in 'build', 'rebuild'
       continue
@@ -4074,11 +4702,11 @@ function Get-BuildPlan {
     }
     elseif (-not $has_output) {
       $e.Action = 'build'; $e.Reasons.Add('no output')
-      if ($stamp -and $stamp.fingerprint -ne $fp.Hash -and $name -ne 'strawberry') { $e.Clean = $true }
+      if ($stamp -and $stamp.fingerprint -ne $fp.Hash -and $name -ne 'akousma') { $e.Clean = $true }
     }
     elseif (-not $stamp) {
-      if ($name -eq 'strawberry') {
-        $e.Action = 'rebuild'; $e.Reasons.Add('no stamp yet: source reset to the commit + patches re-applied')
+      if ($name -eq 'akousma') {
+        $e.Action = 'rebuild'; $e.Reasons.Add('no stamp yet: source reset to the commit')
       }
       elseif (@(Get-LocalPatches $name).Count -gt 0 -and -not (Test-LegacyPatchStamp $name)) {
         $e.Action = 'rebuild'; $e.Clean = $true; $e.Reasons.Add("no stamp yet, and its local patches can't be verified as applied")
@@ -4088,7 +4716,7 @@ function Get-BuildPlan {
       }
     }
     elseif ($stamp.fingerprint -ne $fp.Hash) {
-      $e.Action = 'rebuild'; $e.Clean = ($name -ne 'strawberry')
+      $e.Action = 'rebuild'; $e.Clean = ($name -ne 'akousma')
       foreach ($r in (Get-FingerprintChanges $stamp $fp)) { $e.Reasons.Add($r) }
     }
     else { $e.Reasons.Add('up to date') }
@@ -4104,7 +4732,7 @@ function Get-BuildPlan {
       $relink = $rebuild_dependents -and $plan[$p].Own -and ($smb_tool_packages -notcontains $p)
       if (-not $embed -and -not $relink) { continue }
       foreach ($d in @($plan.Keys)) {
-        if ($d -in 'strawberry', 'strawberry-setup') { continue }   # below
+        if ($d -in 'akousma', 'akousma-setup') { continue }   # below
         if (-not $graph.ContainsKey($d) -or @($graph[$d]) -notcontains $p) { continue }
         $de = $plan[$d]
         if ($de.Action -in 'build', 'rebuild') { continue }
@@ -4116,22 +4744,22 @@ function Get-BuildPlan {
     }
   } while ($changed)
 
-  $rebuilt = @($plan.Keys | Where-Object { $plan[$_].Action -in 'build', 'rebuild' -and $_ -notin 'strawberry', 'strawberry-setup' })
-  if ($rebuilt.Count -gt 0 -and $plan.Contains('strawberry')) {
-    $se = $plan['strawberry']
+  $rebuilt = @($plan.Keys | Where-Object { $plan[$_].Action -in 'build', 'rebuild' -and $_ -notin 'akousma', 'akousma-setup' })
+  if ($rebuilt.Count -gt 0 -and $plan.Contains('akousma')) {
+    $se = $plan['akousma']
     $why = "dependencies rebuilt: $(Format-NameList $rebuilt) (relink)"
     if ($se.Action -in 'skip', 'adopt') { $se.Action = 'rebuild'; $se.Reasons.Clear(); $se.Reasons.Add($why) }
     elseif ($se.Action -eq 'excluded' -and -not $se.Pending) { $se.Pending = $why }
   }
-  if ($plan.Contains('strawberry-setup')) {
-    $all_rebuilt = @($plan.Keys | Where-Object { $plan[$_].Action -in 'build', 'rebuild' -and $_ -ne 'strawberry-setup' })
-    $ue = $plan['strawberry-setup']
+  if ($plan.Contains('akousma-setup')) {
+    $all_rebuilt = @($plan.Keys | Where-Object { $plan[$_].Action -in 'build', 'rebuild' -and $_ -ne 'akousma-setup' })
+    $ue = $plan['akousma-setup']
     if ($all_rebuilt.Count -gt 0) {
       $why = "packages rebuilt: $(Format-NameList $all_rebuilt)"
       if ($ue.Action -in 'skip', 'adopt') { $ue.Action = 'rebuild'; $ue.Reasons.Clear(); $ue.Reasons.Add($why) }
       elseif ($ue.Action -eq 'excluded' -and -not $ue.Pending) { $ue.Pending = $why }
     }
-    if ($ue.Action -in 'build', 'rebuild') { $ue.Clean = $true }   # a fresh StrawberrySetup folder: no DLLs left over from older builds
+    if ($ue.Action -in 'build', 'rebuild') { $ue.Clean = $true }   # a fresh AkousmaSetup folder: no DLLs left over from older builds
   }
   return $plan
 }
@@ -4188,7 +4816,7 @@ function Clear-ComponentBuildDirs([string]$component) {
 
 function Invoke-LocalPatches {
   # Applies the local patches of the current package (-package_patches), in order, -p1 from $root. Called by CMakeBuild /
-  # MesonBuild (so after the build tools' own patches) and by Build-Strawberry; once per package and process.
+  # MesonBuild (so after the build tools' own patches); once per package and process.
   # A patch that is already applied is skipped. Git binary diffs (e.g. new icons) are applied with git apply, the rest with
   # GNU patch, with the line endings of the tree (tarballs and Windows checkouts can have either).
   param([string]$root = ".", [string]$component = $script:smb_component)
@@ -4274,7 +4902,7 @@ function Invoke-LocalPatches {
       }
       elseif ($was_already) {
         $already++
-        # strawberry's source was just reset to the commit, so this only happens for a patch whose changes an earlier patch in
+        # a git build copy was just reset to the commit, so this only happens for a patch whose changes an earlier patch in
         # the list already made (a duplicate); other packages: a tree that was patched before.
         Write-Host "$component patch [$number/$count] skipped, already applied: $patch_name (its changes are already in the source)" -ForegroundColor Yellow
       }
@@ -4287,7 +4915,7 @@ function Invoke-LocalPatches {
 }
 
 function Sync-GitBuildCopy {
-  # Run in a build copy of a git clone (e.g. <build_path>/strawberry, a copy of <src_path>/strawberry with its .git).
+  # Run in a build copy of a git clone (e.g. <build_path>/akousma, a copy of <src_path>/akousma with its .git).
   # Puts it at the source clone's HEAD with no local changes, keeping the 'build' folder (CMake's) and ignored files.
   # Returns the content hash + timestamp of every file that differed from the commit before (an earlier run's patches),
   # for Restore-UnchangedTimestamps. A copy of those changes is kept in <build_path>/<name>-before-sync.diff.
@@ -4476,8 +5104,8 @@ try {
       "tinysvcmdns" { Build-TinySvcmdns }
       "pe-parse" { Build-PeParse }
       "pe-util" { Build-PeUtil }
-      "strawberry" { Build-Strawberry }
-      "strawberry-setup" { Build-StrawberrySetup }
+      "akousma" { Build-Akousma }
+      "akousma-setup" { Build-AkousmaSetup }
       default {
         Write-Warning "Unknown component: $component (skipping)"
       }
