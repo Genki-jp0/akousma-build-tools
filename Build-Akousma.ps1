@@ -59,7 +59,12 @@
                              AkousmaSetup-1.0.0+gitabc1234-...). Off by default: release builds say "Akousma 1.0.0" only.
                              Passed to CMake as -DAKOUSMA_INCLUDE_GIT_COMMIT=ON.
 .PARAMETER BuildType          release (default) or debug.
-.PARAMETER Arch               x86_64 (default), x86, x64, amd64 or arm64.
+.PARAMETER Arch               x64 (default; also x86_64 / amd64), x86 or arm64. Several architectures are built one after the
+                              other, each in a fresh pwsh process (so one Visual Studio environment never leaks into the next)
+                              and in its own folders: -Arch x64,x86 (or "x64,x86" in one argument, or both = x64 + x86).
+                              Every architecture has its own build tree, dependency prefix, logs and installer; downloads and
+                              git clones are shared. A build that fails does not stop the next architecture; the run ends with
+                              a summary and exit code 1 if any failed.
 .PARAMETER Jobs               Parallel jobs in total (split between parallel packages). Default: logical processors.
 .PARAMETER ParallelPackages   Packages built at the same time. 0 = auto (half the jobs, min 2). 1 = one after the other.
 .PARAMETER Only / -Skip       Build only / never build these packages (when they need building). Akousma is "akousma", the
@@ -95,7 +100,7 @@
 .PARAMETER ProjectRoot, MsvcRoot, DownloadsPath, SrcPath, BuildPath, PrefixPath, JomDir, TempPath,
            PipCachePath, CargoHome, RustupHome, LogPath, LogDir
                               Locations. Empty = under the work root. With no path parameters the defaults are:
-                                ProjectRoot   C:\data\projects\strawberry   (build.log)
+                                ProjectRoot   C:\data\projects\strawberry   (build.log; x86: build_x86.log)
                                 DownloadsPath C:\data\projects\strawberry\msvc_\downloads   (SrcPath: the same; Akousma is
                                               cloned to <SrcPath>\akousma)
                                 BuildPath     C:\data\projects\strawberry\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
@@ -106,6 +111,10 @@
                                 LogPath C:\data\projects\strawberry\build.log
                               The dependency folders keep upstream's strawberry names on purpose: existing dependency builds
                               and upstream's prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages are used as they are.
+                              <arch> is x86_64, x86 or arm64. An explicit -BuildPath / -PrefixPath / -LogDir / -LogPath is used
+                              as it is for x86_64 and gets _<arch> appended for x86 and arm64 (E:\build -> E:\build_x86,
+                              build.log -> build_x86.log) unless its name already says the architecture, so an x64 command
+                              line plus -Arch x86 never builds into the x64 folders.
 .PARAMETER OldCargoHome, OldRustupHome, OldDownloads, OldBuildPath, OldPrefixPath
                               Old locations to migrate from / clean. Empty = the usual old spots (%USERPROFILE%\.cargo,
                               <system drive>\data\..., ...); skipped if absent.
@@ -124,6 +133,10 @@
   .\Build-Akousma.ps1 -ForceRebuild gst-plugins-good
   # Check a command line: resolved folders, source and local patches, nothing is changed
   .\Build-Akousma.ps1 -WorkRoot E:\ -AkousmaSource E:\src\Akousma -DryRun
+  # 32-bit (x86) build, in its own folders (build_x86_release, strawberry_msvc_x86_release)
+  .\Build-Akousma.ps1 -Arch x86
+  # x64 and x86, one after the other
+  .\Build-Akousma.ps1 -Arch x64,x86
 #>
 
 [CmdletBinding()]
@@ -143,8 +156,10 @@ param(
   [Alias('build_type')]
   [ValidateSet("debug", "release", "Debug", "Release")]
   [string]$BuildType        = "release",
-  [ValidateSet("x86", "x64", "x86_64", "amd64", "arm64")]
-  [string]$Arch             = "x86_64",
+  # One or more of x64 / x86_64 / amd64, x86, arm64, both (= x64,x86). Validated below, so "x64,x86" in one argument
+  # (pwsh -File, cmd) works too.
+  [ArgumentCompleter({ param($cmd, $param, $word) @('x64', 'x86', 'arm64', 'both', 'x86_64', 'amd64') | Where-Object { $_ -like "$word*" } })]
+  [string[]]$Arch           = @("x86_64"),
   [ValidateRange(0, 512)]
   [int]$Jobs                = 0,
   [Alias('parallel_packages')]
@@ -224,6 +239,7 @@ if (-not $inner_build -and -not $child_build) {
 
 # Remember where the user started; restored in the finally block at the very end (success, failure or Ctrl+C).
 $StartLocation = (Get-Location).Path
+$BuildExitCode = 0
 # Same for the environment: this script (Path, TEMP/TMP, PIP_CACHE_DIR, CARGO_HOME, RUSTUP_HOME, AKOUSMA_WORK_ROOT, SMB_*) and the
 # build (Visual Studio dev shell: Path, INCLUDE, LIB, ...) change environment variables. Without a restore, every run in the
 # same window prepended to Path again until cmd failed with "The input line is too long".
@@ -242,6 +258,75 @@ function Resolve-UserPath([string]$p) {
   if ([string]::IsNullOrWhiteSpace($p) -or $p -match '^[A-Za-z]:$' -or $p -match '^[A-Za-z][A-Za-z0-9+.-]+://') { return $p }
   return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
 }
+
+# ---------------------------------------------------------------------
+# Architectures: -Arch x64 (default), x86, arm64, or several (-Arch x64,x86 / -Arch both), built one after the other.
+# ---------------------------------------------------------------------
+function ConvertTo-ArchList([string[]]$Names) {
+  # Upstream's names: x86_64 (x64, amd64), x86, arm64; both = x86_64 + x86. 'a,b' in one argument counts as two (pwsh -File
+  # and cmd pass a comma list as one string). Order kept, duplicates dropped.
+  $list = [System.Collections.Generic.List[string]]::new()
+  foreach ($n in @($Names | ForEach-Object { "$_" -split '[,;\s]+' } | Where-Object { $_ })) {
+    $canonical = switch -Regex ($n.Trim().ToLowerInvariant()) {
+      '^(x64|x86_64|amd64)$' { 'x86_64' }
+      '^(x86|win32|i686)$'   { 'x86' }
+      '^arm64$'              { 'arm64' }
+      '^both$'               { 'x86_64'; 'x86' }
+      default { throw "-Arch: unknown architecture '$n'. Use x64 (= x86_64, amd64), x86, arm64 or both (= x64,x86), e.g. -Arch x64,x86." }
+    }
+    foreach ($c in @($canonical)) { if (-not $list.Contains($c)) { $list.Add($c) } }
+  }
+  if ($list.Count -eq 0) { $list.Add('x86_64') }
+  return ,$list.ToArray()
+}
+$ArchList = ConvertTo-ArchList $Arch
+if ($ArchList.Count -gt 1) {
+  # Several architectures: one fresh pwsh per architecture, one after the other. Each starts from this window's environment,
+  # so the Visual Studio environment (Path, INCLUDE, LIB, ...) of one architecture never reaches the next, and each builds in
+  # its own folders (they follow from -Arch, see -BuildPath). All other parameters are passed on as they are, relative paths
+  # made absolute first. A failed architecture does not stop the next one.
+  $pwsh = (Get-Process -Id $PID).Path
+  $pathParams = @('GstGoodPatch', 'AkousmaSource', 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot',
+                  'DownloadsPath', 'SrcPath', 'BuildPath', 'PrefixPath', 'JomDir', 'TempPath', 'PipCachePath', 'CargoHome',
+                  'RustupHome', 'LogPath', 'LogDir', 'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath',
+                  'OldPrefixPath', 'GitBinPath')
+  $forward = [ordered]@{}
+  foreach ($k in @($PSBoundParameters.Keys)) {
+    if ($k -eq 'Arch') { continue }
+    $v = $PSBoundParameters[$k]
+    if ($v -is [System.Management.Automation.SwitchParameter]) { $v = $v.IsPresent }
+    elseif ($k -in $pathParams) { $v = Resolve-UserPath $v }
+    $forward[$k] = $v
+  }
+  $scriptLiteral = $PSCommandPath.Replace("'", "''")
+  $results = [ordered]@{}
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  Write-Host "Architectures: $($ArchList -join ', ') (one after the other, each in its own folders and pwsh process)" -ForegroundColor Cyan
+  for ($i = 0; $i -lt $ArchList.Count; $i++) {
+    $a = $ArchList[$i]
+    Write-Host "`n==> [$($i + 1)/$($ArchList.Count)] $a" -ForegroundColor Magenta
+    $forward['Arch'] = $a
+    # The parameters travel as JSON (hashtables such as -VersionOverrides can't be passed on a command line).
+    $json = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($forward | ConvertTo-Json -Compress -Depth 8)))
+    $command = "`$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$json')) | ConvertFrom-Json -AsHashtable; " +
+               "`$global:LASTEXITCODE = 0; try { & '$scriptLiteral' @p; exit `$LASTEXITCODE } " +
+               "catch { Write-Host `"Error: `$_`" -ForegroundColor Red; exit 1 }"
+    $started = $clock.Elapsed
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command)))
+    $results[$a] = @{ Code = $LASTEXITCODE; Time = $clock.Elapsed - $started }
+  }
+  Write-Host "`n==> Architectures" -ForegroundColor Magenta
+  foreach ($a in $results.Keys) {
+    $r = $results[$a]
+    Write-Host ("  {0,-7} {1,-22} {2:hh\:mm\:ss}" -f $a, $(if ($r.Code -eq 0) { 'ok' } else { "FAILED (exit $($r.Code))" }), $r.Time) -ForegroundColor $(if ($r.Code -eq 0) { 'Green' } else { 'Red' })
+  }
+  exit $(if (@($results.Values | Where-Object { $_.Code -ne 0 }).Count -gt 0) { 1 } else { 0 })
+}
+# One architecture from here on (a plain string, not the [string[]] parameter).
+$archName = $ArchList[0]
+Remove-Variable -Name Arch -Scope Script -Force
+$Arch = $archName
+
 if ($GstGoodPatch) {
   $full = Resolve-UserPath $GstGoodPatch
   if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "-GstGoodPatch file not found: $GstGoodPatch (looked for $full)" }
@@ -421,6 +506,27 @@ $WorkRoot = (Normalize-Path $WorkRoot).TrimEnd('\')
 
 # The dependency folders keep upstream's names (data\projects\strawberry, strawberry_msvc_<arch>_<type>), so existing
 # dependency builds and upstream's prebuilt dependency packages are used as they are.
+# One set of folders per architecture: the build tree, the prefix and the logs. Downloads, git clones (SrcPath), jom, temp
+# and the caches are shared. The defaults carry the architecture (build_<arch>_<type>, strawberry_msvc_<arch>_<type>); an
+# explicit -BuildPath / -PrefixPath / -LogDir / -LogPath, and the default build.log, is used as it is for x86_64 (as before)
+# and gets _<arch> appended for the other architectures, unless its name already says the architecture. So an x64 command
+# line plus -Arch x86 builds next to the x64 folders, never into them.
+function Add-ArchSuffix([string]$Path, [switch]$File) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Arch -eq 'x86_64') { return $Path }
+  $trimmed = if ($Path -match '^[A-Za-z]:[\\/]?$') { $Path } else { $Path.TrimEnd('\', '/') }
+  $leaf = Split-Path -Leaf $trimmed
+  $token = "(?i)(^|[^a-z0-9])$([regex]::Escape($Arch))$(if ($Arch -eq 'x86') { '(?!_64)' })([^a-z0-9]|$)"
+  if ($leaf -match $token) { return $Path }
+  if ($File) {
+    $ext = [System.IO.Path]::GetExtension($trimmed)
+    return $trimmed.Substring(0, $trimmed.Length - $ext.Length) + "_$Arch" + $ext
+  }
+  return "${trimmed}_$Arch"
+}
+$BuildPath  = Add-ArchSuffix $BuildPath
+$PrefixPath = Add-ArchSuffix $PrefixPath
+$LogDir     = Add-ArchSuffix $LogDir
+
 $ProjectRoot   = Resolve-Default $ProjectRoot   "$WorkRoot\data\projects\strawberry"
 $MsvcRoot      = Resolve-Default $MsvcRoot      "$ProjectRoot\msvc_"
 $DownloadsPath = Resolve-Default $DownloadsPath "$MsvcRoot\downloads"
@@ -432,7 +538,7 @@ $TempPath      = Resolve-Default $TempPath      "$WorkRoot\temp"
 $PipCachePath  = Resolve-Default $PipCachePath  "$WorkRoot\cache\pip"
 $CargoHome     = Resolve-Default $CargoHome     "$WorkRoot\cargo"
 $RustupHome    = Resolve-Default $RustupHome    "$WorkRoot\rustup"
-$LogPath       = Resolve-Default $LogPath       "$ProjectRoot\build.log"
+$LogPath       = Normalize-Path (Add-ArchSuffix -File (Resolve-Default $LogPath "$ProjectRoot\build.log"))
 $LogDir        = Resolve-Default $LogDir        "$BuildPath\logs"
 
 # Old locations (migration sources / clean-up targets). They are skipped when they do not exist or
@@ -470,12 +576,13 @@ $locations = [ordered]@{
 
 if ($DryRun) {
   Write-Step "Dry run: nothing is changed"
+  Write-Host ("  {0,-14} {1}" -f 'Arch', $Arch)
   Write-Host ("  {0,-14} {1}" -f 'WorkRoot', $WorkRoot)
   foreach ($k in $locations.Keys) { Write-Host ("  {0,-14} {1}" -f $k, $locations[$k]) }
   Write-Host ("  {0,-14} {1}" -f 'GitBinPath', $(if ($GitBinPath) { $GitBinPath } else { '(git.exe not found)' }))
   Write-Host ("  {0,-14} {1}" -f 'Akousma', $(if ($AkousmaSource) { $AkousmaSource } else { "$SrcPath\akousma  ($AkousmaRepo @ $AkousmaRef)" }))
   Write-Host ("  {0,-14} {1}" -f 'Akousma build', "$BuildPath\akousma\build\akousma.exe")
-  Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-<arch>.exe")
+  Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-$(@{ x86_64 = 'x64'; x86 = 'x86'; arm64 = 'arm64' }[$Arch]).exe")
   Write-Host ("  {0,-14} {1}" -f 'Build tools', "$PSScriptRoot (strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes)")
   return
 }
@@ -712,6 +819,8 @@ Remove-Item Env:SMB_GIT_REFS_JSON, Env:SMB_VERSION_OVERRIDES_JSON, Env:SMB_PACKA
 
 $ErrorActionPreference = "Continue"   # native tools write to stderr; don't abort on that
 & { Write-SourceSummary; Write-PatchSummary; & $PSCommandPath @buildArgs -inner_build } *>&1 | Tee-Object $LogPath
+# The build part ends with exit 0 / exit 1; pass that on (the multi-architecture run above and scripts calling this one read it).
+$BuildExitCode = $LASTEXITCODE
 }
 finally {
   Set-Location -LiteralPath $StartLocation
@@ -723,6 +832,7 @@ finally {
     if ([Environment]::GetEnvironmentVariable($name) -cne $StartEnv[$name]) { [Environment]::SetEnvironmentVariable($name, $StartEnv[$name]) }
   }
 }
+if ($BuildExitCode) { exit $BuildExitCode }
 return
 }
 #endregion
@@ -730,6 +840,10 @@ return
 #region Build
 # The build part: run by the preparation above (-inner_build) and by the parallel build's child processes (-child_build).
 # The rest of this script is upstream's StrawberryMSVCBuild.ps1 with the Akousma changes; its variables keep upstream's names.
+# It always builds one architecture: -Arch has exactly one entry here. A plain string from here on, not the [string[]] parameter.
+$arch_name = [string]@($Arch)[0]
+Remove-Variable -Name Arch -Scope Script -Force
+$arch = $arch_name
 $build_type = $BuildType
 $parallel_packages = if ($PSBoundParameters.ContainsKey('ParallelPackages')) { $ParallelPackages } else { 1 }
 $downloads_path = $DownloadsPath
@@ -5118,6 +5232,7 @@ try {
   Write-Host "========================================" -ForegroundColor Green
   Write-Host "Build completed successfully!" -ForegroundColor Green
   Write-Host "========================================" -ForegroundColor Green
+  exit 0
 
 }
 catch {
