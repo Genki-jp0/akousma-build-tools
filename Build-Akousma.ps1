@@ -65,6 +65,12 @@
                               Every architecture has its own build tree, dependency prefix, logs and installer; downloads and
                               git clones are shared. A build that fails does not stop the next architecture; the run ends with
                               a summary and exit code 1 if any failed.
+                              -Arch arm64 on an x64 PC cross-compiles: build -Arch x64 first (or -Arch x64,arm64), the
+                              arm64 build runs the x64 build's tools (see -HostPrefixPath and BUILD.txt).
+.PARAMETER HostPrefixPath     -Arch arm64 on an x64 PC only: the x64 dependency prefix whose programs (pkg-config, Qt's
+                              moc / rcc / uic / lrelease, orcc, glib-compile-resources, ...) the cross-compile runs. Default:
+                              the prefix -Arch x64 uses with the same -WorkRoot / -PrefixPath / -BuildType
+                              (C:\akousma_msvc_x86_64_release). It has to be a finished x64 build of the same versions.
 .PARAMETER Jobs               Parallel jobs in total (split between parallel packages). Default: logical processors.
 .PARAMETER ParallelPackages   Packages built at the same time. 0 = auto (half the jobs, min 2). 1 = one after the other.
 .PARAMETER Only / -Skip       Build only / never build these packages (when they need building). Akousma is "akousma", the
@@ -139,6 +145,8 @@
   .\Build-Akousma.ps1 -Arch x86
   # x64 and x86, one after the other
   .\Build-Akousma.ps1 -Arch x64,x86
+  # arm64 on an x64 PC (cross-compile; the x64 build is built first, or reused when it is up to date)
+  .\Build-Akousma.ps1 -Arch x64,arm64
 #>
 
 [CmdletBinding()]
@@ -211,6 +219,8 @@ param(
   [string]$LogPath          = "",
   [Alias('log_dir')]
   [string]$LogDir           = "",
+  [Alias('host_prefix_path')]   # -Arch arm64 on an x64 PC: the x64 prefix (empty = the -Arch x64 one)
+  [string]$HostPrefixPath   = "",
 
   # old locations to migrate from / clean up
   [string]$OldCargoHome     = "",
@@ -291,7 +301,7 @@ if ($ArchList.Count -gt 1) {
   $pathParams = @('GstGoodPatch', 'AkousmaSource', 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot',
                   'DownloadsPath', 'SrcPath', 'BuildPath', 'PrefixPath', 'JomDir', 'TempPath', 'PipCachePath', 'CargoHome',
                   'RustupHome', 'LogPath', 'LogDir', 'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath',
-                  'OldPrefixPath', 'GitBinPath')
+                  'OldPrefixPath', 'GitBinPath', 'HostPrefixPath')
   $forward = [ordered]@{}
   foreach ($k in @($PSBoundParameters.Keys)) {
     if ($k -eq 'Arch') { continue }
@@ -463,7 +473,8 @@ Write-PatchSummary
 # The other file/folder parameters are only made absolute here; they are checked (or created) where they are used.
 foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', 'MsvcRoot', 'DownloadsPath', 'SrcPath',
                   'BuildPath', 'PrefixPath', 'JomDir', 'TempPath', 'PipCachePath', 'CargoHome', 'RustupHome', 'LogPath', 'LogDir',
-                  'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath', 'OldPrefixPath', 'GitBinPath') {
+                  'OldCargoHome', 'OldRustupHome', 'OldDownloads', 'OldBuildPath', 'OldPrefixPath', 'GitBinPath',
+                  'HostPrefixPath') {
   Set-Variable -Name $name -Value (Resolve-UserPath (Get-Variable -Name $name -ValueOnly))
 }
 
@@ -526,6 +537,7 @@ function Add-ArchSuffix([string]$Path, [switch]$File) {
   return "${trimmed}_$Arch"
 }
 $prefixIsDefault = [string]::IsNullOrWhiteSpace($PrefixPath)
+$prefixArg = $PrefixPath   # -PrefixPath as passed (x64 uses it as it is), for -HostPrefixPath's default
 $BuildPath  = Add-ArchSuffix $BuildPath
 $PrefixPath = Add-ArchSuffix $PrefixPath
 $LogDir     = Add-ArchSuffix $LogDir
@@ -558,6 +570,20 @@ $oldDefaultPrefix = Normalize-Path "$WorkRoot\strawberry_msvc_${Arch}_${BuildTyp
 $prefixRenameNote = if ($prefixIsDefault -and (Test-Path -LiteralPath $oldDefaultPrefix) -and -not (Test-Path -LiteralPath (Join-Path $PrefixPath 'bin'))) {
   "The default dependency prefix is $PrefixPath now (it was $oldDefaultPrefix). Every dependency is built again there, which takes hours. $oldDefaultPrefix is not used any more; delete it once the new build works."
 }
+
+# arm64 on an x64 PC: a cross-compile. arm64 programs don't run on x64 Windows, so the programs a build runs come from the
+# x64 build (-HostPrefixPath, default the prefix -Arch x64 uses with the same settings). The build part checks that they are
+# there before it builds anything. (An arm64 PC runs x64 and x86 programs, so nothing else is a cross-compile here.)
+$CrossBuild = $Arch -eq 'arm64' -and [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::X64
+if ($CrossBuild) {
+  if (-not $HostPrefixPath) {
+    if ($prefixIsDefault) { $HostPrefixPath = "$WorkRoot\akousma_msvc_x86_64_${BuildType}" }
+    elseif ((Add-ArchSuffix $prefixArg) -ne $prefixArg) { $HostPrefixPath = $prefixArg }
+    else { throw "-PrefixPath '$prefixArg' names arm64, so the x64 prefix the arm64 cross-compile needs can't be derived from it. Pass -HostPrefixPath <the x64 prefix>." }
+  }
+  $HostPrefixPath = Normalize-Path $HostPrefixPath
+}
+else { $HostPrefixPath = "" }
 
 # Git: found on PATH (git.exe may be in cmd\, bin\ or mingw64\bin\); the build folder added to PATH is <Git root>\bin.
 if ([string]::IsNullOrWhiteSpace($GitBinPath)) {
@@ -594,6 +620,7 @@ if ($DryRun) {
   Write-Host ("  {0,-14} {1}" -f 'Akousma build', "$BuildPath\akousma\build\akousma.exe")
   Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-$(@{ x86_64 = 'x64'; x86 = 'x86'; arm64 = 'arm64' }[$Arch]).exe")
   Write-Host ("  {0,-14} {1}" -f 'Build tools', "$PSScriptRoot (strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes)")
+  if ($CrossBuild) { Write-Host ("  {0,-14} {1}" -f 'Cross-compile', "arm64 on an x64 PC; x64 programs from $HostPrefixPath") }
   if ($prefixRenameNote) { Write-Warning $prefixRenameNote }
   return
 }
@@ -762,7 +789,9 @@ function Join-PathList([string[]]$Entries) {
   }
   return ($kept -join ';')
 }
-$env:Path = Join-PathList (@($jomDirInUse, "$CargoHome\bin", "$PrefixPath\bin", $GitBinPath) + ($env:Path -split ';'))
+# Cross-compile: the x64 prefix's bin comes first, so a program found on PATH (pkg-config, orcc, peldd, openssl, ...) is the
+# x64 one that runs here, not the arm64 one of the same name in the arm64 prefix.
+$env:Path = Join-PathList (@($jomDirInUse, "$CargoHome\bin") + @(if ($CrossBuild) { "$HostPrefixPath\bin" }) + @("$PrefixPath\bin", $GitBinPath) + ($env:Path -split ';'))
 Set-Location $PSScriptRoot
 
 $buildArgs = @{
@@ -778,6 +807,7 @@ $buildArgs = @{
   LogDir            = $LogDir.Replace('\', '/')
   AkousmaRepo       = $AkousmaRepo
 }
+if ($CrossBuild)             { $buildArgs.HostPrefixPath   = $HostPrefixPath.Replace('\', '/') }
 if ($AkousmaSource)          { $buildArgs.AkousmaSource    = $AkousmaSource.Replace('\', '/') }
 else                         { $GitRefs['akousma']         = $AkousmaRef }
 if ($EnableQtSparkle)        { $buildArgs.EnableQtSparkle  = $true }
@@ -1256,6 +1286,19 @@ if ([string]::IsNullOrEmpty($src_path)) { $src_path = $downloads_path }
 $src_path = $src_path.Replace('\', '/').TrimEnd('/')
 $build_path = $build_path.Replace('\', '/').TrimEnd('/')
 $prefix_path = $prefix_path.Replace('\', '/').TrimEnd('/')
+
+# --- patched: arm64 cross-compile on an x64 PC ---
+# x64 Windows can't run arm64 programs, so everything a build runs comes from an x64 build: the x64 prefix
+# (-HostPrefixPath; default the prefix of -Arch x64 with the same settings), and for ICU an x64 build in the same ICU tree
+# (MSBuildProject). The cross-compile settings are all in CMakeBuild / MesonBuild / MSBuildProject, the helpers next to them
+# and Get-CrossPackageArgs, not in the Build-* recipes: the x64 and x86 recipes, and so their change-detection stamps, stay
+# as they were. NOTE: written without an x64 -> arm64 test run; see BUILD.txt for what to send back if a package fails.
+$cross_build = ($arch -eq "arm64" -and $vs_host_arch -eq "amd64")
+$host_prefix_path = ""
+if ($cross_build) {
+  $host_prefix_path = if ($HostPrefixPath) { $HostPrefixPath } else { "$work_root/akousma_msvc_x86_64_${build_type}" }
+  $host_prefix_path = $host_prefix_path.Replace('\', '/').TrimEnd('/')
+}
 $qt_dev = "OFF"
 $gst_dev = "OFF"
 
@@ -1272,6 +1315,7 @@ Write-Host "  Build Architecture:  $arch"
 Write-Host "  CMake build type:    $cmake_build_type"
 Write-Host "  Meson build type:    $meson_build_type"
 Write-Host "  Prefix path:         $prefix_path"
+if ($cross_build) { Write-Host "  Cross-compile:       arm64 on an x64 PC, x64 programs from $host_prefix_path" }
 Write-Host "  Jobs per package:    $jobs"
 Write-Host "  Parallel packages:   $parallel_packages"
 Write-Host ""
@@ -1300,7 +1344,14 @@ if (-not (Test-Path "$prefix_path/bin/sed.exe")) {
 
 # Setup environment variables
 Write-Host "Setting up environment variables..." -ForegroundColor Cyan
-$env:PKG_CONFIG_EXECUTABLE = "$prefix_path/bin/pkgconf.exe"
+# Cross-compile: the x64 pkgconf (the arm64 one doesn't run here), limited to the arm64 prefix's .pc files: its own default
+# folder is the x64 prefix's lib/pkgconfig. PKG_CONFIG_ALLOW_CROSS: Rust's pkg-config crate refuses to cross-compile without it.
+$pkg_config_exe = if ($cross_build) { "$host_prefix_path/bin/pkgconf.exe" } else { "$prefix_path/bin/pkgconf.exe" }
+$env:PKG_CONFIG_EXECUTABLE = $pkg_config_exe
+if ($cross_build) {
+  $env:PKG_CONFIG_LIBDIR = "$prefix_path/lib/pkgconfig"
+  $env:PKG_CONFIG_ALLOW_CROSS = "1"
+}
 $env:PKG_CONFIG_PATH = "$prefix_path/lib/pkgconfig"
 $env:PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1"
 $env:PKG_CONFIG_ALLOW_SYSTEM_LIBS = "1"
@@ -1311,6 +1362,11 @@ Initialize-Jom
 $env:YASMPATH = "$prefix_path/bin"
 
 PrependPathToEnvPath -path "$prefix_path/bin"
+if ($cross_build) {
+  # The x64 prefix's bin in front of the arm64 one (also when an earlier step put it elsewhere): see the preparation part.
+  foreach ($p in "$host_prefix_path/bin", ("$host_prefix_path/bin").Replace('/', '\')) { RemovePathFromEnvPath -path $p }
+  $env:PATH = "$host_prefix_path/bin;$env:PATH"
+}
 
 # Strawberry Perl folders (derived, not hardcoded); empty when it is not installed
 $strawberry_perl_root = Get-StrawberryPerlRoot
@@ -1354,6 +1410,12 @@ if (-not (Test-Path $vs_dev_env_path)) {
   exit 1
 }
 
+# Cross-compile: -Arch arm64 -HostArch amd64 = the x64-hosted compilers that build arm64 code (Hostx64\arm64), from the
+# "MSVC ... ARM64/ARM64EC build tools" component.
+if ($cross_build -and -not (Get-ChildItem -Path "$vs_install_path/VC/Tools/MSVC/*/bin/Hostx64/arm64/cl.exe" -ErrorAction SilentlyContinue)) {
+  Write-Error "-Arch arm64 on an x64 PC needs Visual Studio's ARM64 build tools, which $vs_install_path doesn't have (no VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe). Visual Studio Installer > Modify > Individual components: 'MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools (Latest)' (Microsoft.VisualStudio.Component.VC.Tools.ARM64)."
+  exit 1
+}
 Write-Host "  Initializing Visual Studio $arch environment..." -ForegroundColor Cyan
 & $vs_dev_shell_path -Arch $vs_arch -HostArch $vs_host_arch -SkipAutomaticLocation
 Write-Host "  Visual Studio $arch environment initialized" -ForegroundColor Green
@@ -1826,8 +1888,11 @@ function CMakeBuild {
     "-DCMAKE_INSTALL_PREFIX=$prefix_path",
     "-DBUILD_STATIC_LIBS=$build_static_libs_toggle",
     "-DBUILD_SHARED_LIBS=$build_shared_libs_toggle",
-    "-DPKG_CONFIG_EXECUTABLE=$prefix_path/bin/pkgconf.exe"
+    "-DPKG_CONFIG_EXECUTABLE=$pkg_config_exe"
   )
+  if ($cross_build) {
+    $configure_args += Get-CrossCMakeArgs   # before the recipe's own, which win
+  }
   if ($additional_args) {
     $configure_args += $additional_args
   }
@@ -1881,6 +1946,11 @@ function MesonBuild {
   try {
     Clear-ForCleanBuild $build_path   # patched: clean rebuild = new build folder
     Invoke-LocalPatches -root "."   # patched: local patches (-package_patches), after the recipe's own
+    if ($cross_build -and $script:smb_component -eq "gst-plugins-rs") {
+      # Rust's standard library for arm64 (quick when it is already installed). cargo gets --target from the cross file's rust entry.
+      & rustup target add aarch64-pc-windows-msvc
+      if ($LASTEXITCODE -ne 0) { throw "rustup target add aarch64-pc-windows-msvc failed (the arm64 cross-compile of gst-plugins-rs needs it)" }
+    }
     if (-not (Test-Path "$build_path/build.ninja")) {
       $setup_args = @(
         "--buildtype=$build_type",
@@ -1895,6 +1965,9 @@ function MesonBuild {
         "-Dc_link_args=-L$prefix_path/lib",
         "-Dcpp_link_args=-L$prefix_path/lib"
       )
+      if ($cross_build) {
+        $setup_args += Get-MesonCrossArgs   # before the recipe's own, which win
+      }
       if ($additional_args) {
         $setup_args += $additional_args
       }
@@ -1925,6 +1998,117 @@ function MesonBuild {
   finally {
     Pop-Location
   }
+}
+
+# --- patched: arm64 cross-compile on an x64 PC (see $cross_build) ---
+function Get-CrossPackageArgs {
+  # Per package, on top of the generic cross-compile settings (the recipe's own arguments come after these and win).
+  switch ($script:smb_component) {
+    # configure -platform win32-arm64-msvc (Qt picks it from the compiler too; this makes it explicit)
+    "qtbase"  { return @("-DQT_QMAKE_TARGET_MKSPEC=win32-arm64-msvc") }
+    # Akousma's dist/CMakeLists.txt reads the architecture of a cross-compile from a MinGW compiler name; with cl.exe it
+    # would find none and the installer would have no architecture.
+    "akousma" { return @("-DTARGET_ARCH=arm64") }
+    # orc's test suite runs orcc (guarded upstream for cross builds; off here anyway, nothing uses it)
+    "orc"     { return @("-Dtests=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled") }
+  }
+  return @()
+}
+
+function Get-CrossCMakeArgs {
+  # CMAKE_SYSTEM_NAME makes it a CMake cross-compile (CMAKE_CROSSCOMPILING: try_run / check_*_source_runs are not run;
+  # the projects in this build skip them then). CMAKE_SYSTEM_PROCESSOR would otherwise be the x64 PC's AMD64, and projects
+  # pick their CPU code from it (libjpeg-turbo: x86 SIMD with NASM instead of Arm Neon). ARM64 is what a native arm64
+  # build reports. CMAKE_LIBRARY_PATH / CMAKE_INCLUDE_PATH: find_library / find_path search the arm64 prefix before the
+  # folders CMake derives from PATH, where the x64 prefix's bin now comes first (not CMAKE_PREFIX_PATH: find_program would
+  # then find the arm64 programs, e.g. Akousma's openssl.exe). QT_HOST_PATH: Qt's tools (moc, rcc, uic, syncqt, lrelease,
+  # ...) of the same Qt version, from the x64 prefix (https://doc.qt.io/qt-6/cmake-variable-qt-host-path.html). Other
+  # projects ignore the Qt variables (CMake prints "Manually-specified variables were not used").
+  return @(
+    "-DCMAKE_SYSTEM_NAME=Windows",
+    "-DCMAKE_SYSTEM_VERSION=10.0",
+    "-DCMAKE_SYSTEM_PROCESSOR=ARM64",
+    "-DCMAKE_LIBRARY_PATH=$prefix_path/lib",
+    "-DCMAKE_INCLUDE_PATH=$prefix_path/include",
+    "-DQT_HOST_PATH=$host_prefix_path",
+    "-DQT_HOST_PATH_CMAKE_DIR=$host_prefix_path/lib/cmake"
+  ) + @(Get-CrossPackageArgs)
+}
+
+function Write-TextFileIfChanged([string]$path, [string]$text) {
+  # Parallel packages write the same machine files: only when the content differs, and renamed into place.
+  if ((Test-Path -LiteralPath $path) -and ([System.IO.File]::ReadAllText($path) -ceq $text)) { return }
+  $tmp = "$path.$PID.tmp"
+  [System.IO.File]::WriteAllText($tmp, $text, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::Move($tmp, $path, $true)
+}
+
+function Get-MesonCrossArgs {
+  # meson's machine files for the cross-compile (https://mesonbuild.com/Cross-compilation.html), in the build folder:
+  #  - cross file = the arm64 machine meson builds for. [binaries]: cl / lib / rc from the arm64 Visual Studio environment,
+  #    and the programs meson runs while building, from the x64 prefix: pkg-config, and glib-compile-resources /
+  #    glib-compile-schemas / orcc (the GNOME module and GStreamer's find_program look here first). rust: cargo builds for
+  #    aarch64-pc-windows-msvc (gst-plugins-rs' cargo_wrapper.py passes the --target on). pkg_config_libdir: only the arm64
+  #    .pc files. needs_exe_wrapper: nothing built here is run.
+  #  - native file = the x64 PC (meson's build machine): the same programs, and the x64 .pc files for dependency(native: true).
+  #    It has no C compiler: cl.exe in this environment makes arm64 code, so meson reports "Compiler for language c for the
+  #    build machine not found", which is fine as long as a project doesn't compile anything for the build machine.
+  $tools = [ordered]@{ 'pkg-config' = "$host_prefix_path/bin/pkgconf.exe" }
+  foreach ($t in 'glib-compile-resources', 'glib-compile-schemas', 'orcc') {
+    if (Test-Path -LiteralPath "$host_prefix_path/bin/$t.exe") { $tools[$t] = "$host_prefix_path/bin/$t.exe" }
+  }
+  $binaries = ($tools.Keys | ForEach-Object { "$_ = '$($tools[$_])'" }) -join "`n"
+  $cross_file = "$build_path/meson-cross-arm64.ini"
+  $native_file = "$build_path/meson-native-x64.ini"
+  Write-TextFileIfChanged $cross_file (@(
+    "# Written by Build-Akousma.ps1: arm64 cross-compile on an x64 PC (meson setup --cross-file).",
+    "[host_machine]", "system = 'windows'", "cpu_family = 'aarch64'", "cpu = 'aarch64'", "endian = 'little'", "",
+    "[binaries]", "c = 'cl'", "cpp = 'cl'", "ar = 'lib'", "windres = 'rc'",
+    "rust = ['rustc', '--target', 'aarch64-pc-windows-msvc']", $binaries, "",
+    "[properties]", "needs_exe_wrapper = true", "pkg_config_libdir = ['$prefix_path/lib/pkgconfig']", ""
+  ) -join "`n")
+  Write-TextFileIfChanged $native_file (@(
+    "# Written by Build-Akousma.ps1: the x64 PC of the arm64 cross-compile (meson setup --native-file).",
+    "[binaries]", $binaries, "",
+    "[properties]", "pkg_config_libdir = ['$host_prefix_path/lib/pkgconfig']", ""
+  ) -join "`n")
+  return @("--cross-file=$cross_file", "--native-file=$native_file") + @(Get-CrossPackageArgs)
+}
+
+function Assert-CrossHostTools([string[]]$queue) {
+  # Before anything is built: the x64 programs the queued packages run, in -HostPrefixPath.
+  $qt_users = @('qtbase', 'qttools', 'qtimageformats', 'qtsvg', 'kdsingleapplication', 'qtsparkle', 'akousma')
+  $gst_orc = @('gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad', 'gst-plugins-ugly')
+  $needs = [ordered]@{
+    'bin/pkgconf.exe'                                          = @($queue)
+    'bin/orcc.exe'                                             = $gst_orc
+    'lib/cmake/Qt6/Qt6Config.cmake'                            = $qt_users
+    'bin/moc.exe'                                              = $qt_users
+    'bin/rcc.exe'                                              = $qt_users
+    'bin/uic.exe'                                              = $qt_users
+    'lib/cmake/Qt6LinguistTools/Qt6LinguistToolsConfig.cmake'  = @('qtsparkle', 'akousma')
+    'bin/lrelease.exe'                                         = @('qtsparkle', 'akousma')
+  }
+  $missing = foreach ($rel in $needs.Keys) {
+    $for = @($needs[$rel] | Where-Object { $queue -contains $_ })
+    if ($for.Count -gt 0 -and -not (Test-Path -LiteralPath "$host_prefix_path/$rel")) { "  $host_prefix_path/$rel   (for $(Format-NameList $for))" }
+  }
+  if ($missing) {
+    throw ("The arm64 cross-compile runs x64 programs from the x64 prefix (-HostPrefixPath), and these are missing:`n" + ($missing -join "`n") +
+           "`nBuild x64 first with the same settings (-Arch x64, or -Arch x64,arm64 for both), or pass -HostPrefixPath <x64 prefix>.")
+  }
+  if (@($qt_users | Where-Object { $queue -contains $_ }).Count -gt 0) {
+    # Qt's host tools must be the same Qt version as the Qt being built.
+    $host_qt = $null
+    foreach ($f in "Qt6ConfigVersionImpl.cmake", "Qt6ConfigVersion.cmake") {
+      $path = "$host_prefix_path/lib/cmake/Qt6/$f"
+      if ((Test-Path -LiteralPath $path) -and ((Get-Content -Raw -LiteralPath $path) -match 'set\(PACKAGE_VERSION "([^"]+)"\)')) { $host_qt = $Matches[1]; break }
+    }
+    if ($host_qt -and $host_qt -ne $qt_version) {
+      throw "The x64 prefix $host_prefix_path has Qt $host_qt, the arm64 build is Qt ${qt_version}: Qt's tools have to be the same version. Rebuild x64 first (-Arch x64) with the same versions."
+    }
+  }
+  Write-Host "Cross-compile: arm64 on an x64 PC, with the x64 programs from $host_prefix_path" -ForegroundColor Cyan
 }
 
 function UpgradeVSProject {
@@ -1968,6 +2152,17 @@ function MSBuildProject {
   )
   if ($additional_args) {
     $build_args += $additional_args
+  }
+  # --- patched: arm64 cross-compile ---
+  # ICU's data build (source/data/makedata.mak) runs ICU's own tools. For an ARM64 configuration on an x64 PC it takes the
+  # x64 ones from the same tree (tools\*\x64\<configuration>, bin64; "ARM_CROSS_BUILD" in makedata.mak), so the x64
+  # configuration is built first: with MSBuild's own x64 settings (UseEnv=false), as the environment is the arm64 one.
+  if ($cross_build -and $script:smb_component -eq "icu4c" -and $platform -eq $msbuild_platform) {
+    Write-Host "Building $project_path for x64 first: ICU makes its ARM64 data with its x64 tools" -ForegroundColor Cyan
+    & msbuild $project_path "-p:Configuration=$configuration" "-p:Platform=x64" "-p:UseEnv=false" "-m:$jobs" "-p:CL_MPCount=$msbuild_cl_mp" @additional_args
+    if ($LASTEXITCODE -ne 0) {
+      throw "MSBuild failed (the x64 build of ICU's tools for the arm64 cross-compile)"
+    }
   }
   & msbuild @build_args
   if ($LASTEXITCODE -ne 0) {
@@ -4356,6 +4551,7 @@ function Invoke-ParallelQueue {
         if ($versions_file) { $child_args += @("-versions_file", $versions_file) }
         if ($ci_versions_file) { $child_args += @("-ci_versions_file", $ci_versions_file) }
         if ($jom_path) { $child_args += @("-jom_path", $jom_path) }
+        if ($host_prefix_path) { $child_args += @("-host_prefix_path", $host_prefix_path) }
         $child_args += @("-akousma_repo", $akousma_repo)
         if ($akousma_source) { $child_args += @("-akousma_source", $akousma_source) }
         if ($enable_qtsparkle) { $child_args += @("-enable_qtsparkle") }
@@ -4641,7 +4837,7 @@ function Get-PackageFingerprint {
   }
   $local_patches = @(foreach ($p in @(Get-LocalPatches $name)) { [ordered]@{ name = (Split-Path $p -Leaf); sha256 = (Get-NormalizedFileSha256 $p) } })
   $parts = [ordered]@{
-    config        = "$($build_type.ToLowerInvariant())/$arch" + $(if ($name -eq 'akousma') { " " + ((Get-AkousmaCMakeArgs) -join ' ') } else { "" })
+    config        = "$($build_type.ToLowerInvariant())/$arch" + $(if ($cross_build) { " cross-compiled on x64" } else { "" }) + $(if ($name -eq 'akousma') { " " + ((Get-AkousmaCMakeArgs) -join ' ') } else { "" })
     sources       = $sources
     tool_patches  = $tool_patches
     local_patches = $local_patches
@@ -5120,6 +5316,20 @@ try {
       Write-Host "x86: gst-plugins-rs (Spotify) is not built for x86 (skipped like -Skip gst-plugins-rs)." -ForegroundColor Cyan
       $skip = @($skip) + @('gst-plugins-rs')
     }
+    # --- patched: arm64 cross-compile on an x64 PC ---
+    # yasm (an x86 assembler) builds its generators (genperf, re2c, ...) and runs them, and no arm64 package uses it.
+    # gst-plugins-rs (Spotify): the arm64 AkousmaSetup doesn't contain it (akousma.nsi lists gstspotify.dll for x64 only).
+    # -Only <name> builds either anyway.
+    if ($cross_build) {
+      $only_names = @($only | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() })
+      $skip_names = @($skip | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() })
+      foreach ($n in 'yasm', 'gst-plugins-rs') {
+        if ($only_names -notcontains $n -and $skip_names -notcontains $n) {
+          Write-Host "arm64 cross-compile: $n is not built (skipped like -Skip $n)." -ForegroundColor Cyan
+          $skip = @($skip) + @($n)
+        }
+      }
+    }
     $plan = Get-BuildPlan -markers $package_markers -graph (Get-PackageDependencies) -only $only -skip $skip -force $force_rebuild `
                           -no_change_detection:$no_change_detection -rebuild_dependents:$rebuild_dependents
     Write-BuildPlan $plan -no_change_detection:$no_change_detection
@@ -5129,6 +5339,7 @@ try {
       Write-Host "Build queue: $(if ($build_queue.Count) { $build_queue -join ', ' } else { '(nothing)' })" -ForegroundColor Cyan
       exit 0
     }
+    if ($cross_build -and $build_queue.Count -gt 0) { Assert-CrossHostTools $build_queue }
     Save-PlanStamps $plan
     $script:smb_clean_packages.Clear()
     foreach ($c in $clean_queue) { [void]$script:smb_clean_packages.Add($c) }
