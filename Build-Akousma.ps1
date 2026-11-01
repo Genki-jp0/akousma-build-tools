@@ -2112,8 +2112,10 @@ function Assert-CrossHostTools([string[]]$queue) {
       $path = "$script:host_prefix_path/lib/cmake/Qt6/$f"
       if ((Test-Path -LiteralPath $path) -and ((Get-Content -Raw -LiteralPath $path) -match 'set\(PACKAGE_VERSION "([^"]+)"\)')) { $host_qt = $Matches[1]; break }
     }
-    if ($host_qt -and $host_qt -ne $script:qt_version) {
-      throw "The x64 prefix $script:host_prefix_path has Qt $host_qt, the arm64 build is Qt ${script:qt_version}: Qt's tools have to be the same version. Rebuild x64 first (-Arch x64) with the same versions."
+    # $qt_version as everywhere else, not $script:qt_version: the versions are global variables (Set-Variable -Scope Global
+    # where the versions file, -CiVersionsFile and -VersionOverrides are read), so the script scope has none.
+    if ($host_qt -and $host_qt -ne $qt_version) {
+      throw "The x64 prefix $script:host_prefix_path has Qt $host_qt, the arm64 build is Qt ${qt_version}: Qt's tools have to be the same version. Rebuild x64 first (-Arch x64) with the same versions."
     }
   }
   Write-Host "Cross-compile: arm64 on an x64 PC, with the x64 programs from $script:host_prefix_path" -ForegroundColor Cyan
