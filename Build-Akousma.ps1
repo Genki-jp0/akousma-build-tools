@@ -1052,7 +1052,23 @@ switch ($arch_numeric_id) {
 $vs_host_arch = $vs_host_arch.ToLower()
 $arch = $arch.ToLower()
 
-if ($arch -eq "x64" -or $arch -eq "x86_64" -or $arch -eq "amd64") {
+# --- patched: x86 (32-bit) again, as upstream had it before 6408bdc "StrawberryMSVCBuild: Remove x86" ---
+if ($arch -eq "x86" -or $arch -eq "win32" -or $arch -eq "i686") {
+  $arch="x86"
+  $vs_arch="x86"
+  $openssl_platform="VC-WIN32"
+  $msbuild_platform="Win32"
+  $arch_short="x86"
+  $arch_win="win32"
+  $arch_bits="32"
+  $libdir="lib"
+  $bindir="bin"
+  $lib_machine="x86"
+  $vs_platform="Win32"
+  $libjpeg_turbo_simd="ON"
+  $lame_msvcver="X86"
+}
+elseif ($arch -eq "x64" -or $arch -eq "x86_64" -or $arch -eq "amd64") {
   $arch="x86_64"
   $vs_arch="amd64"
   $openssl_platform="VC-WIN64A"
@@ -1086,6 +1102,11 @@ else {
   Write-Error "Unknown arch: $arch"
   exit 1
 }
+# --- patched: x86 ---
+# lame's Makefile.MSVC on 32-bit: it assembles its MMX code with nasmw (NASM's old name, not installed), and unless the CPU
+# reports PROCESSOR_LEVEL 6 (AMD Zen reports 23 or 25) it compiles with flags MSVC dropped long ago (/QIfdiv /QI0f /YX).
+# Plain C with the P6 flags, like the 64-bit builds (which use no assembly either).
+$lame_make_args = if ($arch -eq "x86") { @("ASM=NO", "CPU=P6") } else { @() }
 
 # Set paths
 # Use default build path if not specified
@@ -2885,7 +2906,7 @@ function Build-Lame {
     Push-Location "lame-$lame_version"
     try {
       & patch -p1 -N -i "$patch_path/lame-msvc.patch"
-      & nmake -f Makefile.MSVC MSVCVER=${lame_msvcver} libmp3lame.dll
+      & nmake -f Makefile.MSVC MSVCVER=${lame_msvcver} @lame_make_args libmp3lame.dll
       if ($LASTEXITCODE -ne 0) { throw "nmake build failed" }
       New-Item -Path "$prefix_path/include/lame" -ItemType Directory -Force
       Copy-Item "include/lame.h" "$prefix_path/include/lame/" -Force
@@ -2909,8 +2930,9 @@ function Build-FFTW3 {
   Write-Host "Building fftw3" -ForegroundColor Yellow
   Push-Location $build_path
   try {
-    # There is no MinGW-W64 binary package for arm64, so build it from source with CMake
-    if ($arch -eq "arm64") {
+    # There is no MinGW-W64 binary package for arm64 or x86 (fftw3-mingw-cross only publishes x86_64), so build it from source
+    # with CMake
+    if ($arch -eq "arm64" -or $arch -eq "x86") {
       DownloadPackage -package_name "fftw-source"
       ExtractPackage "fftw-$fftw_source_version.tar.gz"
       Push-Location "fftw-$fftw_source_version"
@@ -3851,10 +3873,16 @@ function Get-AkousmaCMakeArgs {
   $git_commit = if ($include_git_commit) { "ON" } else { "OFF" }
   # Audio CD needs libcdio (and GStreamer's cdio plugin, built with gst-plugins-ugly once libcdio is there).
   $audiocd = if (Test-Path "$prefix_path/lib/pkgconfig/libcdio.pc") { "ON" } else { "OFF" }
+  # x86: the installer's architecture is set explicitly (CMake reports the 64-bit host as the processor of a native 32-bit
+  # build), and warnings are not errors: Akousma is developed and tested as x64 only, and 32-bit MSVC warns about conversions
+  # (64-bit file offsets and sizes to 32-bit size_t / qsizetype) that x64 doesn't have. x64 is unchanged.
+  $werror = if ($arch -eq "x86") { "OFF" } else { "ON" }
+  $arch_args = if ($arch -eq "x86") { @("-DTARGET_ARCH=i686") } else { @() }
   return @(
-    "-DARCH=$arch",
+    "-DARCH=$arch"
+  ) + $arch_args + @(
     "-DENABLE_TRANSLATIONS=ON",
-    "-DBUILD_WERROR=ON",
+    "-DBUILD_WERROR=$werror",
     "-DENABLE_WIN32_CONSOLE=$enable_win32_console",
     "-DICU_ROOT=$prefix_path",
     "-DENABLE_AUDIOCD=$audiocd",
@@ -4956,6 +4984,13 @@ try {
   }
   else {
     Assert-LocalPatches $package_markers
+    # --- patched: x86 ---
+    # gst-plugins-rs (the Spotify plugin) is built for x86_64 only, like upstream's CI did when it still built x86, and the
+    # x86 AkousmaSetup doesn't list it. It would also need Rust's i686-pc-windows-msvc target.
+    if ($arch -eq "x86" -and @($skip | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() }) -notcontains 'gst-plugins-rs') {
+      Write-Host "x86: gst-plugins-rs (Spotify) is not built for x86 (skipped like -Skip gst-plugins-rs)." -ForegroundColor Cyan
+      $skip = @($skip) + @('gst-plugins-rs')
+    }
     $plan = Get-BuildPlan -markers $package_markers -graph (Get-PackageDependencies) -only $only -skip $skip -force $force_rebuild `
                           -no_change_detection:$no_change_detection -rebuild_dependents:$rebuild_dependents
     Write-BuildPlan $plan -no_change_detection:$no_change_detection
