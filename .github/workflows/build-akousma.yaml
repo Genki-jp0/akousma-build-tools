@@ -1,0 +1,185 @@
+name: Build Akousma
+
+# Builds the dependencies, Akousma and AkousmaSetup with Build-Akousma.ps1 on a GitHub-hosted runner.
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Architecture'
+        type: choice
+        options: [arm64, x64]
+        default: arm64
+      akousma_ref:
+        description: 'Akousma branch, tag or commit'
+        type: string
+        default: master
+
+permissions:
+  contents: read
+
+env:
+  nasm_version: '3.02'
+  win_flex_bison_version: '2.5.25'
+  curl_options: '-f -O -L --connect-timeout 60 -m 900 --retry 15 --retry-delay 10 --retry-max-time 300 --retry-all-errors'
+
+jobs:
+  build:
+    name: Build Akousma (${{ inputs.arch }}, release)
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Everything Build-Akousma.ps1 creates goes under this root (the larger D: drive when the runner has one).
+      - name: Set work root
+        shell: bash
+        run: |
+          drive=$(test -d /d && echo "D" || echo "C")
+          echo "WORK_ROOT=${drive}:" >> $GITHUB_ENV
+          echo "AKOUSMA_DIR=${drive}:/data/projects/akousma" >> $GITHUB_ENV
+
+      - name: Enable git long paths
+        shell: bash
+        run: git config --system core.longpaths true
+
+      # The runner image's MinGW/MSYS2 trees, OpenSSL and the Windows SDK's ICU get picked up by CMake/Meson instead of the
+      # prefix. Strawberry Perl's c\bin stays: the script takes it off PATH itself and needs it to find Strawberry Perl.
+      - name: Delete conflicting libraries
+        shell: bash
+        run: rm -rf /c/{msys64,mingw32,mingw64,clangarm64} "/c/program files/OpenSSL"
+
+      - name: Delete conflicting icu
+        shell: bash
+        run: find "/c/program files (x86)/windows kits/" -type f \( -iname 'icu*.lib' -o -iname 'icu*.h' \) -print -delete
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+          architecture: ${{ inputs.arch }}
+
+      - name: Install meson and ninja
+        shell: cmd
+        run: pip install meson ninja
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # gst-plugins-rs must be built by a native arm64 cargo/rustc.
+      - name: Use the arm64 Rust toolchain
+        if: inputs.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if ((rustc -vV) -notcontains 'host: aarch64-pc-windows-msvc') {
+            rustup set default-host aarch64-pc-windows-msvc
+            rustup toolchain install stable-aarch64-pc-windows-msvc --profile minimal
+            rustup default stable-aarch64-pc-windows-msvc
+          }
+          rustc -vV
+
+      - name: Install cargo-c
+        shell: cmd
+        run: cargo install --locked cargo-c
+
+      # The script checks for nasm on every architecture; the x64 nasm runs emulated on arm64.
+      - name: Install nasm
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          f=nasm-${{ env.nasm_version }}-installer-x64.exe
+          curl ${{ env.curl_options }} https://www.nasm.us/pub/nasm/releasebuilds/${{ env.nasm_version }}/win64/$f || curl ${{ env.curl_options }} https://github.com/netwide-assembler/nasm/releases/download/nasm-${{ env.nasm_version }}/$f
+          7z x -oC:/nasm "$f"
+          cp /c/nasm/nasm.exe /c/nasm/nasmw.exe
+
+      - name: Install win_flex_bison
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          f=win_flex_bison-${{ env.win_flex_bison_version }}.zip
+          curl ${{ env.curl_options }} https://github.com/lexxmark/winflexbison/releases/download/v${{ env.win_flex_bison_version }}/$f || curl ${{ env.curl_options }} https://packages.strawberrymusicplayer.org/$f
+          7z x -oC:/win_flex_bison "$f"
+
+      # AkousmaSetup needs NSIS with the LockedList plugin.
+      - name: Install NSIS and LockedList
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS"
+          if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress; if ($LASTEXITCODE) { exit 1 } }
+          curl.exe -f -L --retry 5 -o LockedList.zip https://nsis.sourceforge.io/mediawiki/images/d/d3/LockedList.zip
+          if ($LASTEXITCODE) { exit 1 }
+          7z x -oLockedList LockedList.zip
+          Copy-Item (Get-ChildItem LockedList -Recurse -Filter LockedList64.dll)[0].FullName "$nsis\Plugins\"
+          Copy-Item (Get-ChildItem LockedList -Recurse -Filter LockedList.dll | Where-Object FullName -like '*x86-unicode*')[0].FullName "$nsis\Plugins\x86-unicode\"
+
+      # Only the tools the build needs; GITHUB_PATH entries (Python, cargo) are still put in front of this.
+      - name: Cleanup PATH
+        shell: pwsh
+        run: |
+          $cargo = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
+          $paths = @(
+            "C:\Windows\system32",
+            "C:\Windows",
+            "C:\Windows\System32\Wbem",
+            "C:\Windows\System32\WindowsPowerShell\v1.0",
+            "C:\Program Files\PowerShell\7",
+            "C:\Program Files\Git\cmd",
+            "C:\Program Files\Git\bin",
+            "C:\Program Files\CMake\bin",
+            "C:\Program Files\7-Zip",
+            "C:\Strawberry\perl\bin",
+            "$cargo\bin",
+            "C:\nasm",
+            "C:\win_flex_bison",
+            "${env:ProgramFiles(x86)}\NSIS"
+          )
+          "PATH=$($paths -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_DIR=$cargo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUSTUP_DIR=$(if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { "$env:USERPROFILE\.rustup" })" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # Source archives (and the git clones, which the script keeps in the same folder).
+      - name: Restore downloads
+        id: downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.AKOUSMA_DIR }}/msvc_/downloads
+          key: akousma-downloads-${{ inputs.arch }}-${{ hashFiles('StrawberryPackageVersions.txt') }}
+
+      # -CargoHome / -RustupHome: use the runner's Rust in place instead of copying it under the work root.
+      - name: Build
+        shell: pwsh
+        env:
+          AKOUSMA_REF: ${{ inputs.akousma_ref }}
+        run: >-
+          pwsh -NoProfile -NonInteractive -File .\Build-Akousma.ps1
+          -Arch ${{ inputs.arch }} -AkousmaRef $env:AKOUSMA_REF -BuildType release
+          -WorkRoot $env:WORK_ROOT -CargoHome $env:CARGO_DIR -RustupHome $env:RUSTUP_DIR
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AkousmaSetup-${{ inputs.arch }}
+          path: ${{ env.AKOUSMA_DIR }}/msvc_/build_*_release/AkousmaSetup/AkousmaSetup-*.exe
+          if-no-files-found: error
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.arch }}
+          path: |
+            ${{ env.AKOUSMA_DIR }}/build*.log
+            ${{ env.AKOUSMA_DIR }}/msvc_/build_*_release/logs/
+          if-no-files-found: ignore
+
+      # Saved even when the build fails, so a rerun doesn't download everything again.
+      - name: Save downloads
+        if: always() && steps.downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.AKOUSMA_DIR }}/msvc_/downloads
+          key: ${{ steps.downloads.outputs.cache-primary-key }}
