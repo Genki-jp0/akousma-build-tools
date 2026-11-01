@@ -56,6 +56,49 @@ Output:
 Each run puts PATH, TEMP and the other environment variables it changes back when it finishes.
 
 
+Architectures: x64 and x86
+--------------------------
+  .\Build-Akousma.ps1                     x64 (amd64), as before
+  .\Build-Akousma.ps1 -Arch x86           x86 (32-bit)
+  .\Build-Akousma.ps1 -Arch x64,x86       both, one after the other (also: -Arch both, or "x64,x86" in one argument)
+All the other parameters work the same with any -Arch (-ForceRebuild, -List, -DryRun, -AkousmaSource, ...); with
+several architectures they apply to each one.
+
+Each architecture has its own folders, so both coexist and an x86 build never touches the x64 one:
+                    x64 (x86_64)                                  x86
+  build tree        ...\msvc_\build_x86_64_release                 ...\msvc_\build_x86_release
+  prefix            C:\strawberry_msvc_x86_64_release              C:\strawberry_msvc_x86_release
+  logs              ...\build_x86_64_release\logs, build.log       ...\build_x86_release\logs, build_x86.log
+  installer         ...\build_x86_64_release\AkousmaSetup\         ...\build_x86_release\AkousmaSetup\
+                    AkousmaSetup-<version>-msvc-x64.exe            AkousmaSetup-<version>-msvc-x86.exe
+Shared: the downloads, the git clones (SrcPath), jom, temp and the caches. An explicit -BuildPath / -PrefixPath /
+-LogDir / -LogPath is used as it is for x64 and gets _x86 appended for x86 (-BuildPath C:\strawberry\build ->
+C:\strawberry\build_x86, build.log -> build_x86.log), unless its name already says x86. So your x64 command line plus
+-Arch x86 (or -Arch x64,x86) is all it takes. -DryRun shows the folders of each architecture.
+
+Several architectures: each one is built by its own pwsh process, started from the environment of your window, so the
+Visual Studio environment of x64 (Path, INCLUDE, LIB, ...) never reaches the x86 build. A failed architecture doesn't
+stop the next one; at the end the script lists each architecture with ok / FAILED and its time, and exits with 1 if
+one failed. Don't start two builds at the same time in two windows: each run stops leftover compilers first
+(cl, nmake, jom), and both use the same git clones.
+
+x86 differences (everything else is built the same way, for 32-bit):
+  - Visual Studio environment: -Arch x86 -HostArch amd64 (the 64-bit hosted compilers that build 32-bit code).
+    Needs nothing more than x64: the "MSVC ... x64/x86 build tools" component has both.
+  - OpenSSL VC-WIN32, ICU's Win32 platform, lame without its old 32-bit assembler code, FFTW from source (upstream's
+    prebuilt MinGW FFTW is x86_64 only; arm64 already builds it from source the same way).
+  - gst-plugins-rs (Spotify) is not built for x86, as in upstream's CI when it still built x86; the x86 installer
+    doesn't contain it, so Spotify streaming isn't available in the x86 build. No Rust target is needed for x86.
+  - Akousma is built with -DBUILD_WERROR=OFF on x86 (warnings stay warnings; x64 keeps -DBUILD_WERROR=ON) and
+    -DTARGET_ARCH=i686 for the installer.
+  - AkousmaSetup x86 installs to Program Files (x86)\Akousma and the x86 Visual C++ runtime. x64 and x86 Akousma share
+    one uninstall entry and the settings: installing one architecture replaces the other, like an upgrade.
+The first x86 run builds every dependency from scratch (several hours, like the first x64 build). Upstream removed x86
+from its build tools in 2026 (6408bdc), so the 32-bit dependency builds are not tested upstream any more.
+After this update the next x64 run rebuilds lame and fftw3 (their recipes changed; a minute or two), relinks Akousma
+and re-creates AkousmaSetup. Nothing else.
+
+
 Parameters
 ----------
 Get-Help .\Build-Akousma.ps1 -Detailed lists all of them. The old wrapper's names all still work (BuildType,
@@ -89,7 +132,9 @@ Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
                           upstream / old wrapper hand-over variables, no longer read. The work root is passed to the
                           parallel build processes as $env:AKOUSMA_WORK_ROOT.
 
-Unchanged: -BuildType, -Arch, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebuild, -NoChangeDetection,
+-Arch takes several architectures now (see "Architectures: x64 and x86"); -Arch x64 / amd64 build in the x86_64
+folders (they used to make build_x64_* / strawberry_msvc_x64_* folders of their own).
+Unchanged: -BuildType, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebuild, -NoChangeDetection,
 -RebuildDependents, -VersionOverrides, -GitRefs, -VersionsFile, -CiVersionsFile, -CiVersionsRef, -GstGoodPatch,
 -NoAutoPatches, -SkipBuild, -RemoveOldCDrive, -WorkRoot and all the path parameters (-ProjectRoot, -MsvcRoot,
 -DownloadsPath, -SrcPath, -BuildPath, -PrefixPath, -JomDir, -TempPath, -PipCachePath, -CargoHome, -RustupHome,
