@@ -1233,6 +1233,9 @@ else {
 # reports PROCESSOR_LEVEL 6 (AMD Zen reports 23 or 25) it compiles with flags MSVC dropped long ago (/QIfdiv /QI0f /YX).
 # Plain C with the P6 flags, like the 64-bit builds (which use no assembly either).
 $lame_make_args = if ($arch -eq "x86") { @("ASM=NO", "CPU=P6") } else { @() }
+# qtbase 6.11+ has a windows-ioring backend (qioring_win.cpp) that is 64-bit only (static_assert; 32-bit Windows is
+# unsupported upstream). Off on x86, where Qt falls back to its threadpool QRandomAccessAsyncFile backend. x64 is unchanged.
+$qtbase_arch_args = @(if ($arch -eq "x86") { "-DFEATURE_windows_ioring=OFF" })   # @(): empty on x64, adds nothing
 
 # Set paths
 # Use default build path if not specified
@@ -3763,7 +3766,7 @@ function Build-QtBase {
       Push-Location "qtbase-everywhere-src-$qt_version"
     }
     try {
-      CMakeBuild -additional_args @(
+      CMakeBuild -additional_args (@(
           "-DQT_BUILD_EXAMPLES=OFF",
           "-DQT_BUILD_TESTS=OFF",
           "-DFEATURE_openssl=ON",
@@ -3776,7 +3779,7 @@ function Build-QtBase {
           "-DFEATURE_system_harfbuzz=ON",
           "-DFEATURE_system_sqlite=ON",
           "-DICU_ROOT=$prefix_path"
-        )
+        ) + $qtbase_arch_args)
     }
     finally {
       Pop-Location
