@@ -1888,9 +1888,9 @@ function CMakeBuild {
     "-DCMAKE_INSTALL_PREFIX=$prefix_path",
     "-DBUILD_STATIC_LIBS=$build_static_libs_toggle",
     "-DBUILD_SHARED_LIBS=$build_shared_libs_toggle",
-    "-DPKG_CONFIG_EXECUTABLE=$pkg_config_exe"
+    "-DPKG_CONFIG_EXECUTABLE=$script:pkg_config_exe"
   )
-  if ($cross_build) {
+  if ($script:cross_build) {
     $configure_args += Get-CrossCMakeArgs   # before the recipe's own, which win
   }
   if ($additional_args) {
@@ -1946,7 +1946,7 @@ function MesonBuild {
   try {
     Clear-ForCleanBuild $build_path   # patched: clean rebuild = new build folder
     Invoke-LocalPatches -root "."   # patched: local patches (-package_patches), after the recipe's own
-    if ($cross_build -and $script:smb_component -eq "gst-plugins-rs") {
+    if ($script:cross_build -and $script:smb_component -eq "gst-plugins-rs") {
       # Rust's standard library for arm64 (quick when it is already installed). cargo gets --target from the cross file's rust entry.
       & rustup target add aarch64-pc-windows-msvc
       if ($LASTEXITCODE -ne 0) { throw "rustup target add aarch64-pc-windows-msvc failed (the arm64 cross-compile of gst-plugins-rs needs it)" }
@@ -1965,7 +1965,7 @@ function MesonBuild {
         "-Dc_link_args=-L$prefix_path/lib",
         "-Dcpp_link_args=-L$prefix_path/lib"
       )
-      if ($cross_build) {
+      if ($script:cross_build) {
         $setup_args += Get-MesonCrossArgs   # before the recipe's own, which win
       }
       if ($additional_args) {
@@ -2001,6 +2001,9 @@ function MesonBuild {
 }
 
 # --- patched: arm64 cross-compile on an x64 PC (see $cross_build) ---
+# These helpers run inside CMakeBuild / MesonBuild, whose parameters have the same names as script variables
+# (MesonBuild's -build_path is the package's own "build" folder). PowerShell's dynamic scoping would give a helper the
+# caller's value, so they read the script's settings as $script:build_path, $script:prefix_path, ... throughout.
 function Get-CrossPackageArgs {
   # Per package, on top of the generic cross-compile settings (the recipe's own arguments come after these and win).
   switch ($script:smb_component) {
@@ -2028,16 +2031,19 @@ function Get-CrossCMakeArgs {
     "-DCMAKE_SYSTEM_NAME=Windows",
     "-DCMAKE_SYSTEM_VERSION=10.0",
     "-DCMAKE_SYSTEM_PROCESSOR=ARM64",
-    "-DCMAKE_LIBRARY_PATH=$prefix_path/lib",
-    "-DCMAKE_INCLUDE_PATH=$prefix_path/include",
-    "-DQT_HOST_PATH=$host_prefix_path",
-    "-DQT_HOST_PATH_CMAKE_DIR=$host_prefix_path/lib/cmake"
+    "-DCMAKE_LIBRARY_PATH=$script:prefix_path/lib",
+    "-DCMAKE_INCLUDE_PATH=$script:prefix_path/include",
+    "-DQT_HOST_PATH=$script:host_prefix_path",
+    "-DQT_HOST_PATH_CMAKE_DIR=$script:host_prefix_path/lib/cmake"
   ) + @(Get-CrossPackageArgs)
 }
 
 function Write-TextFileIfChanged([string]$path, [string]$text) {
   # Parallel packages write the same machine files: only when the content differs, and renamed into place.
-  if ((Test-Path -LiteralPath $path) -and ([System.IO.File]::ReadAllText($path) -ceq $text)) { return }
+  # .NET resolves a relative path against the process's working folder, not PowerShell's location: make it absolute first.
+  $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
+  [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
+  if ([System.IO.File]::Exists($path) -and ([System.IO.File]::ReadAllText($path) -ceq $text)) { return }
   $tmp = "$path.$PID.tmp"
   [System.IO.File]::WriteAllText($tmp, $text, [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::Move($tmp, $path, $true)
@@ -2053,24 +2059,26 @@ function Get-MesonCrossArgs {
   #  - native file = the x64 PC (meson's build machine): the same programs, and the x64 .pc files for dependency(native: true).
   #    It has no C compiler: cl.exe in this environment makes arm64 code, so meson reports "Compiler for language c for the
   #    build machine not found", which is fine as long as a project doesn't compile anything for the build machine.
-  $tools = [ordered]@{ 'pkg-config' = "$host_prefix_path/bin/pkgconf.exe" }
+  # In the build folder of the whole build (-build_path), shared by all packages: not MesonBuild's -build_path, the
+  # package's own (relative) "build" folder, which a clean rebuild removes.
+  $tools = [ordered]@{ 'pkg-config' = "$script:host_prefix_path/bin/pkgconf.exe" }
   foreach ($t in 'glib-compile-resources', 'glib-compile-schemas', 'orcc') {
-    if (Test-Path -LiteralPath "$host_prefix_path/bin/$t.exe") { $tools[$t] = "$host_prefix_path/bin/$t.exe" }
+    if (Test-Path -LiteralPath "$script:host_prefix_path/bin/$t.exe") { $tools[$t] = "$script:host_prefix_path/bin/$t.exe" }
   }
   $binaries = ($tools.Keys | ForEach-Object { "$_ = '$($tools[$_])'" }) -join "`n"
-  $cross_file = "$build_path/meson-cross-arm64.ini"
-  $native_file = "$build_path/meson-native-x64.ini"
+  $cross_file = "$script:build_path/meson-cross-arm64.ini"
+  $native_file = "$script:build_path/meson-native-x64.ini"
   Write-TextFileIfChanged $cross_file (@(
     "# Written by Build-Akousma.ps1: arm64 cross-compile on an x64 PC (meson setup --cross-file).",
     "[host_machine]", "system = 'windows'", "cpu_family = 'aarch64'", "cpu = 'aarch64'", "endian = 'little'", "",
     "[binaries]", "c = 'cl'", "cpp = 'cl'", "ar = 'lib'", "windres = 'rc'",
     "rust = ['rustc', '--target', 'aarch64-pc-windows-msvc']", $binaries, "",
-    "[properties]", "needs_exe_wrapper = true", "pkg_config_libdir = ['$prefix_path/lib/pkgconfig']", ""
+    "[properties]", "needs_exe_wrapper = true", "pkg_config_libdir = ['$script:prefix_path/lib/pkgconfig']", ""
   ) -join "`n")
   Write-TextFileIfChanged $native_file (@(
     "# Written by Build-Akousma.ps1: the x64 PC of the arm64 cross-compile (meson setup --native-file).",
     "[binaries]", $binaries, "",
-    "[properties]", "pkg_config_libdir = ['$host_prefix_path/lib/pkgconfig']", ""
+    "[properties]", "pkg_config_libdir = ['$script:host_prefix_path/lib/pkgconfig']", ""
   ) -join "`n")
   return @("--cross-file=$cross_file", "--native-file=$native_file") + @(Get-CrossPackageArgs)
 }
@@ -2091,7 +2099,7 @@ function Assert-CrossHostTools([string[]]$queue) {
   }
   $missing = foreach ($rel in $needs.Keys) {
     $for = @($needs[$rel] | Where-Object { $queue -contains $_ })
-    if ($for.Count -gt 0 -and -not (Test-Path -LiteralPath "$host_prefix_path/$rel")) { "  $host_prefix_path/$rel   (for $(Format-NameList $for))" }
+    if ($for.Count -gt 0 -and -not (Test-Path -LiteralPath "$script:host_prefix_path/$rel")) { "  $script:host_prefix_path/$rel   (for $(Format-NameList $for))" }
   }
   if ($missing) {
     throw ("The arm64 cross-compile runs x64 programs from the x64 prefix (-HostPrefixPath), and these are missing:`n" + ($missing -join "`n") +
@@ -2101,14 +2109,14 @@ function Assert-CrossHostTools([string[]]$queue) {
     # Qt's host tools must be the same Qt version as the Qt being built.
     $host_qt = $null
     foreach ($f in "Qt6ConfigVersionImpl.cmake", "Qt6ConfigVersion.cmake") {
-      $path = "$host_prefix_path/lib/cmake/Qt6/$f"
+      $path = "$script:host_prefix_path/lib/cmake/Qt6/$f"
       if ((Test-Path -LiteralPath $path) -and ((Get-Content -Raw -LiteralPath $path) -match 'set\(PACKAGE_VERSION "([^"]+)"\)')) { $host_qt = $Matches[1]; break }
     }
-    if ($host_qt -and $host_qt -ne $qt_version) {
-      throw "The x64 prefix $host_prefix_path has Qt $host_qt, the arm64 build is Qt ${qt_version}: Qt's tools have to be the same version. Rebuild x64 first (-Arch x64) with the same versions."
+    if ($host_qt -and $host_qt -ne $script:qt_version) {
+      throw "The x64 prefix $script:host_prefix_path has Qt $host_qt, the arm64 build is Qt ${script:qt_version}: Qt's tools have to be the same version. Rebuild x64 first (-Arch x64) with the same versions."
     }
   }
-  Write-Host "Cross-compile: arm64 on an x64 PC, with the x64 programs from $host_prefix_path" -ForegroundColor Cyan
+  Write-Host "Cross-compile: arm64 on an x64 PC, with the x64 programs from $script:host_prefix_path" -ForegroundColor Cyan
 }
 
 function UpgradeVSProject {
@@ -2157,7 +2165,7 @@ function MSBuildProject {
   # ICU's data build (source/data/makedata.mak) runs ICU's own tools. For an ARM64 configuration on an x64 PC it takes the
   # x64 ones from the same tree (tools\*\x64\<configuration>, bin64; "ARM_CROSS_BUILD" in makedata.mak), so the x64
   # configuration is built first: with MSBuild's own x64 settings (UseEnv=false), as the environment is the arm64 one.
-  if ($cross_build -and $script:smb_component -eq "icu4c" -and $platform -eq $msbuild_platform) {
+  if ($script:cross_build -and $script:smb_component -eq "icu4c" -and $platform -eq $script:msbuild_platform) {
     Write-Host "Building $project_path for x64 first: ICU makes its ARM64 data with its x64 tools" -ForegroundColor Cyan
     & msbuild $project_path "-p:Configuration=$configuration" "-p:Platform=x64" "-p:UseEnv=false" "-m:$jobs" "-p:CL_MPCount=$msbuild_cl_mp" @additional_args
     if ($LASTEXITCODE -ne 0) {
@@ -4551,7 +4559,7 @@ function Invoke-ParallelQueue {
         if ($versions_file) { $child_args += @("-versions_file", $versions_file) }
         if ($ci_versions_file) { $child_args += @("-ci_versions_file", $ci_versions_file) }
         if ($jom_path) { $child_args += @("-jom_path", $jom_path) }
-        if ($host_prefix_path) { $child_args += @("-host_prefix_path", $host_prefix_path) }
+        if ($script:host_prefix_path) { $child_args += @("-host_prefix_path", $script:host_prefix_path) }
         $child_args += @("-akousma_repo", $akousma_repo)
         if ($akousma_source) { $child_args += @("-akousma_source", $akousma_source) }
         if ($enable_qtsparkle) { $child_args += @("-enable_qtsparkle") }
@@ -4837,7 +4845,7 @@ function Get-PackageFingerprint {
   }
   $local_patches = @(foreach ($p in @(Get-LocalPatches $name)) { [ordered]@{ name = (Split-Path $p -Leaf); sha256 = (Get-NormalizedFileSha256 $p) } })
   $parts = [ordered]@{
-    config        = "$($build_type.ToLowerInvariant())/$arch" + $(if ($cross_build) { " cross-compiled on x64" } else { "" }) + $(if ($name -eq 'akousma') { " " + ((Get-AkousmaCMakeArgs) -join ' ') } else { "" })
+    config        = "$($build_type.ToLowerInvariant())/$arch" + $(if ($script:cross_build) { " cross-compiled on x64" } else { "" }) + $(if ($name -eq 'akousma') { " " + ((Get-AkousmaCMakeArgs) -join ' ') } else { "" })
     sources       = $sources
     tool_patches  = $tool_patches
     local_patches = $local_patches
