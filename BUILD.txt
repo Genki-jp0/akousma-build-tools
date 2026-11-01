@@ -100,6 +100,54 @@ An x64 build that keeps its existing folders (-PrefixPath / -BuildPath pointing 
 everything is built from scratch anyway (see "Folders").
 
 
+Cross-compiling arm64 on an x64 PC
+----------------------------------
+-Arch arm64 on an x64 PC cross-compiles: Visual Studio's x64-hosted compilers make arm64 code. An x64 PC can't run arm64
+programs, so everything the build itself runs comes from the x64 build: pkg-config, Qt's moc / rcc / uic / syncqt /
+lrelease, orcc, glib-compile-resources, ... from the x64 prefix, and ICU's data tools from an x64 build of ICU that the
+arm64 ICU build makes first in its own tree. (Upstream's CI builds arm64 natively on an arm64 runner; this is new.)
+
+Before the first arm64 build:
+  - Visual Studio Installer > Modify > Individual components: "MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools
+    (Latest)" (Microsoft.VisualStudio.Component.VC.Tools.ARM64), and "Windows 11 SDK (10.0.22621.0)"
+    (Microsoft.VisualStudio.Component.Windows11SDK.22621): ICU's ARM64 configuration asks for exactly that SDK.
+    The script stops with a message when the ARM64 build tools are missing.
+  - Nothing for Rust: gst-plugins-rs (Spotify) is not built for arm64, the arm64 installer doesn't contain it (as for
+    x86). If you build it anyway (-Only gst-plugins-rs), the script runs rustup target add aarch64-pc-windows-msvc.
+
+Then, in this order (x64 first; the x64 prefix has to be finished and of the same versions):
+  .\Build-Akousma.ps1 -Arch x64,arm64        both, x64 first (x64 only builds what changed, usually nothing)
+or one at a time:
+  .\Build-Akousma.ps1 -Arch x64
+  .\Build-Akousma.ps1 -Arch arm64
+Add your other parameters as usual (-WorkRoot, -BuildPath, -PrefixPath, -AkousmaSource, ...). The x64 prefix is the
+one -Arch x64 uses with the same parameters (C:\akousma_msvc_x86_64_release by default; -DryRun -Arch arm64 shows it);
+-HostPrefixPath <x64 prefix> names another one. Before it builds anything, the arm64 run checks that the x64 programs
+it needs are there and that the x64 Qt is the same version, and stops with a list otherwise.
+The arm64 folders are the usual per-architecture ones (default build tree ...\msvc_\build_arm64_release, prefix
+C:\akousma_msvc_arm64_release; an explicit -BuildPath / -PrefixPath gets _arm64); the installer is
+...\build_arm64_release\AkousmaSetup\AkousmaSetup-<version>-msvc-arm64.exe. Test it on an arm64 PC.
+
+What is different from a native arm64 build:
+  - CMake packages: -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64 (a cross-compile, so nothing built is
+    run, and the packages see the arm64 CPU), the arm64 prefix for libraries and headers, QT_HOST_PATH = the x64 prefix.
+    Akousma also gets -DTARGET_ARCH=arm64 (for the installer).
+  - Meson packages: --cross-file / --native-file (meson-cross-arm64.ini and meson-native-x64.ini, written to the arm64
+    build tree). meson logs "Compiler for language c for the build machine not found": expected, nothing is
+    compiled for the x64 PC.
+  - pkg-config is the x64 pkgconf, reading only the arm64 prefix's .pc files. The x64 prefix's bin folder comes first
+    on PATH, so a program found on PATH is the x64 one.
+  - ICU: the x64 configuration of ICU's solution is built first in the arm64 ICU tree (its tools make the arm64 data
+    library; ICU's makedata.mak supports this), then ARM64.
+  - yasm (an x86 assembler) and gst-plugins-rs are not built.
+  - The dependency stamps say "cross-compiled on x64", so arm64 packages from a native or earlier attempt are rebuilt.
+The x64 and x86 builds are unchanged (same recipes, same stamps: nothing is rebuilt because of this).
+This was written without an x64 -> arm64 test run. If a package fails, send: build_arm64.log, the
+package's log in the arm64 build tree (logs\<package>.log and logs\<package>.log.err), and from the package's folder in
+the arm64 build tree: Meson build\meson-logs\meson-log.txt, CMake build\CMakeFiles\CMakeConfigureLog.yaml (or
+CMakeError.log); for ICU the log has the MSBuild output. The two meson-*.ini files help too.
+
+
 Parameters
 ----------
 Get-Help .\Build-Akousma.ps1 -Detailed lists all of them. The old wrapper's names all still work (BuildType,
