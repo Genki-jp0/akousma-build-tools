@@ -100,17 +100,19 @@
 .PARAMETER ProjectRoot, MsvcRoot, DownloadsPath, SrcPath, BuildPath, PrefixPath, JomDir, TempPath,
            PipCachePath, CargoHome, RustupHome, LogPath, LogDir
                               Locations. Empty = under the work root. With no path parameters the defaults are:
-                                ProjectRoot   C:\data\projects\strawberry   (build.log; x86: build_x86.log)
-                                DownloadsPath C:\data\projects\strawberry\msvc_\downloads   (SrcPath: the same; Akousma is
+                                ProjectRoot   C:\data\projects\akousma   (build.log; x86: build_x86.log)
+                                DownloadsPath C:\data\projects\akousma\msvc_\downloads   (SrcPath: the same; Akousma is
                                               cloned to <SrcPath>\akousma)
-                                BuildPath     C:\data\projects\strawberry\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
-                                PrefixPath    C:\strawberry_msvc_<arch>_<build type>
-                                JomDir        C:\data\projects\strawberry\strawberry-msvc\tools\jom   (only when jom.exe is not
-                                              on PATH)
+                                BuildPath     C:\data\projects\akousma\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
+                                PrefixPath    C:\akousma_msvc_<arch>_<build type>
+                                JomDir        C:\data\projects\akousma\tools\jom   (only when jom.exe is not on PATH)
                                 TempPath C:\temp, PipCachePath C:\cache\pip, CargoHome C:\cargo, RustupHome C:\rustup,
-                                LogPath C:\data\projects\strawberry\build.log
-                              The dependency folders keep upstream's strawberry names on purpose: existing dependency builds
-                              and upstream's prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages are used as they are.
+                                LogPath C:\data\projects\akousma\build.log
+                              Until 2026-11 the defaults used upstream's strawberry names (data\projects\strawberry,
+                              strawberry_msvc_<arch>_<type>). Those folders are not used any more: the prefix and the build
+                              trees have their absolute paths baked in, so the new folders are a full rebuild. Upstream's
+                              prebuilt strawberry-msvc-<arch>-<type>.tar.xz only works at the path it was built for: extract
+                              it to C:\strawberry_msvc_<arch>_<type> and pass that as -PrefixPath.
                               <arch> is x86_64, x86 or arm64. An explicit -BuildPath / -PrefixPath / -LogDir / -LogPath is used
                               as it is for x86_64 and gets _<arch> appended for x86 and arm64 (E:\build -> E:\build_x86,
                               build.log -> build_x86.log) unless its name already says the architecture, so an x64 command
@@ -133,7 +135,7 @@
   .\Build-Akousma.ps1 -ForceRebuild gst-plugins-good
   # Check a command line: resolved folders, source and local patches, nothing is changed
   .\Build-Akousma.ps1 -WorkRoot E:\ -AkousmaSource E:\src\Akousma -DryRun
-  # 32-bit (x86) build, in its own folders (build_x86_release, strawberry_msvc_x86_release)
+  # 32-bit (x86) build, in its own folders (build_x86_release, akousma_msvc_x86_release)
   .\Build-Akousma.ps1 -Arch x86
   # x64 and x86, one after the other
   .\Build-Akousma.ps1 -Arch x64,x86
@@ -504,10 +506,10 @@ $WorkRoot = if ($WorkRoot) { $WorkRoot } else { 'C:\' }
 if ($WorkRoot.StartsWith('\\')) { $WorkRoot = "$env:SystemDrive\" }
 $WorkRoot = (Normalize-Path $WorkRoot).TrimEnd('\')
 
-# The dependency folders keep upstream's names (data\projects\strawberry, strawberry_msvc_<arch>_<type>), so existing
-# dependency builds and upstream's prebuilt dependency packages are used as they are.
+# The default folders are named akousma (data\projects\akousma, akousma_msvc_<arch>_<type>). Upstream's strawberry names
+# are only kept where they name upstream's things (the -Old* migration sources below, release assets, repositories).
 # One set of folders per architecture: the build tree, the prefix and the logs. Downloads, git clones (SrcPath), jom, temp
-# and the caches are shared. The defaults carry the architecture (build_<arch>_<type>, strawberry_msvc_<arch>_<type>); an
+# and the caches are shared. The defaults carry the architecture (build_<arch>_<type>, akousma_msvc_<arch>_<type>); an
 # explicit -BuildPath / -PrefixPath / -LogDir / -LogPath, and the default build.log, is used as it is for x86_64 (as before)
 # and gets _<arch> appended for the other architectures, unless its name already says the architecture. So an x64 command
 # line plus -Arch x86 builds next to the x64 folders, never into them.
@@ -523,17 +525,18 @@ function Add-ArchSuffix([string]$Path, [switch]$File) {
   }
   return "${trimmed}_$Arch"
 }
+$prefixIsDefault = [string]::IsNullOrWhiteSpace($PrefixPath)
 $BuildPath  = Add-ArchSuffix $BuildPath
 $PrefixPath = Add-ArchSuffix $PrefixPath
 $LogDir     = Add-ArchSuffix $LogDir
 
-$ProjectRoot   = Resolve-Default $ProjectRoot   "$WorkRoot\data\projects\strawberry"
+$ProjectRoot   = Resolve-Default $ProjectRoot   "$WorkRoot\data\projects\akousma"
 $MsvcRoot      = Resolve-Default $MsvcRoot      "$ProjectRoot\msvc_"
 $DownloadsPath = Resolve-Default $DownloadsPath "$MsvcRoot\downloads"
 $SrcPath       = Resolve-Default $SrcPath       "$DownloadsPath"
 $BuildPath     = Resolve-Default $BuildPath     "$MsvcRoot\build_${Arch}_${BuildType}"
-$PrefixPath    = Resolve-Default $PrefixPath    "$WorkRoot\strawberry_msvc_${Arch}_${BuildType}"
-$JomDir        = Resolve-Default $JomDir        "$ProjectRoot\strawberry-msvc\tools\jom"
+$PrefixPath    = Resolve-Default $PrefixPath    "$WorkRoot\akousma_msvc_${Arch}_${BuildType}"
+$JomDir        = Resolve-Default $JomDir        "$ProjectRoot\tools\jom"
 $TempPath      = Resolve-Default $TempPath      "$WorkRoot\temp"
 $PipCachePath  = Resolve-Default $PipCachePath  "$WorkRoot\cache\pip"
 $CargoHome     = Resolve-Default $CargoHome     "$WorkRoot\cargo"
@@ -548,6 +551,13 @@ $OldRustupHome = Resolve-Default $OldRustupHome "$env:USERPROFILE\.rustup"
 $OldDownloads  = Resolve-Default $OldDownloads  "$env:SystemDrive\data\projects\strawberry\msvc_\downloads"
 $OldBuildPath  = Resolve-Default $OldBuildPath  "$env:SystemDrive\data\projects\strawberry\msvc_\build_${Arch}_${BuildType}"
 $OldPrefixPath = Resolve-Default $OldPrefixPath "$env:SystemDrive\strawberry_msvc_${Arch}_${BuildType}"
+
+# The default prefix used to be <WorkRoot>\strawberry_msvc_<arch>_<type>. Say so when that one is still there and the new
+# one is not, so a full dependency rebuild doesn't come as a surprise.
+$oldDefaultPrefix = Normalize-Path "$WorkRoot\strawberry_msvc_${Arch}_${BuildType}"
+$prefixRenameNote = if ($prefixIsDefault -and (Test-Path -LiteralPath $oldDefaultPrefix) -and -not (Test-Path -LiteralPath (Join-Path $PrefixPath 'bin'))) {
+  "The default dependency prefix is $PrefixPath now (it was $oldDefaultPrefix). Every dependency is built again there, which takes hours. $oldDefaultPrefix is not used any more; delete it once the new build works."
+}
 
 # Git: found on PATH (git.exe may be in cmd\, bin\ or mingw64\bin\); the build folder added to PATH is <Git root>\bin.
 if ([string]::IsNullOrWhiteSpace($GitBinPath)) {
@@ -584,6 +594,7 @@ if ($DryRun) {
   Write-Host ("  {0,-14} {1}" -f 'Akousma build', "$BuildPath\akousma\build\akousma.exe")
   Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-$(@{ x86_64 = 'x64'; x86 = 'x86'; arm64 = 'arm64' }[$Arch]).exe")
   Write-Host ("  {0,-14} {1}" -f 'Build tools', "$PSScriptRoot (strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes)")
+  if ($prefixRenameNote) { Write-Warning $prefixRenameNote }
   return
 }
 
@@ -599,6 +610,7 @@ foreach ($k in $locations.Keys) {
 }
 # The build part (and the pwsh children it starts) derive their tool search folders from the same root.
 $env:AKOUSMA_WORK_ROOT = $WorkRoot
+if ($prefixRenameNote) { Write-Warning $prefixRenameNote }
 
 Write-Step "Redirecting temp/caches"
 # All folders are created when missing, including the log folders (Tee-Object does not create the folder of -LogPath).
@@ -1226,15 +1238,15 @@ $lame_make_args = if ($arch -eq "x86") { @("ASM=NO", "CPU=P6") } else { @() }
 # Use default build path if not specified
 $work_root = Get-WorkRoot
 if ([string]::IsNullOrEmpty($downloads_path)) {
-  $downloads_path = "$work_root/data/projects/strawberry/msvc_/downloads"
+  $downloads_path = "$work_root/data/projects/akousma/msvc_/downloads"
 }
 
 if ([string]::IsNullOrEmpty($build_path)) {
-  $build_path = "$work_root/data/projects/strawberry/msvc_/build_${arch}_${build_type}"
+  $build_path = "$work_root/data/projects/akousma/msvc_/build_${arch}_${build_type}"
 }
 
 if ([string]::IsNullOrEmpty($prefix_path)) {
-  $prefix_path = "$work_root/strawberry_msvc_${arch}_${build_type}"
+  $prefix_path = "$work_root/akousma_msvc_${arch}_${build_type}"
 }
 $downloads_path = $downloads_path.Replace('\', '/').TrimEnd('/')
 if ([string]::IsNullOrEmpty($src_path)) { $src_path = $downloads_path }

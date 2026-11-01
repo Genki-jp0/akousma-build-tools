@@ -43,11 +43,11 @@ In PowerShell 7 (pwsh), from anywhere:
   .\Build-Akousma.ps1 -WorkRoot E:\ -DryRun               the resolved folders, the Akousma source and the local
                                                           patches; changes nothing (also runs on Linux / macOS)
 
-With your paths (the command line you used with Build-Strawberry.ps1, -StrawberryRef replaced by -AkousmaRef):
+With your paths, now in akousma folders (see "Folders" for moving the old strawberry ones):
 
-  .\Build-Akousma.ps1 -AkousmaRef master -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\strawberry\project -DownloadsPath E:\strawberry\downloads -SrcPath E:\strawberry\src -BuildPath C:\strawberry\build -LogPath E:\data\projects\strawberry\build.log
+  .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\akousma\project -DownloadsPath E:\akousma\downloads -SrcPath E:\akousma\src -BuildPath C:\akousma\build -LogPath E:\data\projects\akousma\build.log
 
-Your local checkout instead of GitHub: replace -AkousmaRef master with -AkousmaSource <path to your Akousma clone>.
+From GitHub instead of your local checkout: replace -AkousmaSource E:\src\Akousma with -AkousmaRef master.
 
 Output:
   <BuildPath>\akousma\build\akousma.exe
@@ -67,13 +67,13 @@ several architectures they apply to each one.
 Each architecture has its own folders, so both coexist and an x86 build never touches the x64 one:
                     x64 (x86_64)                                  x86
   build tree        ...\msvc_\build_x86_64_release                 ...\msvc_\build_x86_release
-  prefix            C:\strawberry_msvc_x86_64_release              C:\strawberry_msvc_x86_release
+  prefix            C:\akousma_msvc_x86_64_release                 C:\akousma_msvc_x86_release
   logs              ...\build_x86_64_release\logs, build.log       ...\build_x86_release\logs, build_x86.log
   installer         ...\build_x86_64_release\AkousmaSetup\         ...\build_x86_release\AkousmaSetup\
                     AkousmaSetup-<version>-msvc-x64.exe            AkousmaSetup-<version>-msvc-x86.exe
 Shared: the downloads, the git clones (SrcPath), jom, temp and the caches. An explicit -BuildPath / -PrefixPath /
--LogDir / -LogPath is used as it is for x64 and gets _x86 appended for x86 (-BuildPath C:\strawberry\build ->
-C:\strawberry\build_x86, build.log -> build_x86.log), unless its name already says x86. So your x64 command line plus
+-LogDir / -LogPath is used as it is for x64 and gets _x86 appended for x86 (-BuildPath C:\akousma\build ->
+C:\akousma\build_x86, build.log -> build_x86.log), unless its name already says x86. So your x64 command line plus
 -Arch x86 (or -Arch x64,x86) is all it takes. -DryRun shows the folders of each architecture.
 
 Several architectures: each one is built by its own pwsh process, started from the environment of your window, so the
@@ -95,8 +95,9 @@ x86 differences (everything else is built the same way, for 32-bit):
     one uninstall entry and the settings: installing one architecture replaces the other, like an upgrade.
 The first x86 run builds every dependency from scratch (several hours, like the first x64 build). Upstream removed x86
 from its build tools in 2026 (6408bdc), so the 32-bit dependency builds are not tested upstream any more.
-After this update the next x64 run rebuilds lame and fftw3 (their recipes changed; a minute or two), relinks Akousma
-and re-creates AkousmaSetup. Nothing else.
+An x64 build that keeps its existing folders (-PrefixPath / -BuildPath pointing at them) rebuilds only lame and fftw3
+(their recipes changed; a minute or two), relinks Akousma and re-creates AkousmaSetup. In the new akousma folders
+everything is built from scratch anyway (see "Folders").
 
 
 Parameters
@@ -134,6 +135,8 @@ Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
 
 -Arch takes several architectures now (see "Architectures: x64 and x86"); -Arch x64 / amd64 build in the x86_64
 folders (they used to make build_x64_* / strawberry_msvc_x64_* folders of their own).
+The default folders are named akousma now (data\projects\akousma, akousma_msvc_<arch>_<type>, jom in
+<ProjectRoot>\tools\jom); see "Folders".
 Unchanged: -BuildType, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebuild, -NoChangeDetection,
 -RebuildDependents, -VersionOverrides, -GitRefs, -VersionsFile, -CiVersionsFile, -CiVersionsRef, -GstGoodPatch,
 -NoAutoPatches, -SkipBuild, -RemoveOldCDrive, -WorkRoot and all the path parameters (-ProjectRoot, -MsvcRoot,
@@ -147,16 +150,26 @@ strawberry-setup).
 Folders
 -------
 Everything goes to C: by default, wherever this folder is:
-  C:\data\projects\strawberry\...            downloads, sources (Akousma in ...\msvc_\downloads\akousma), build tree,
-                                             build.log, jom
-  C:\strawberry_msvc_<arch>_<build type>     dependency prefix
+  C:\data\projects\akousma\...               downloads, sources (Akousma in ...\msvc_\downloads\akousma), build tree,
+                                             build.log, jom (tools\jom)
+  C:\akousma_msvc_<arch>_<build type>        dependency prefix
   C:\temp, C:\cache\pip, C:\cargo, C:\rustup
 To build on another drive, add -WorkRoot E:\ (or the single path parameters).
-The dependency folders keep upstream's "strawberry" names on purpose: your existing dependency builds and upstream's
-prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages are used as they are, nothing is rebuilt because of the
-rename. Only the Akousma folders are new: <BuildPath>\akousma and <BuildPath>\AkousmaSetup.
-After the first successful run the old <BuildPath>\strawberry and <BuildPath>\StrawberrySetup folders (and
-<SrcPath>\strawberry) are not used any more and can be deleted.
+
+Until 2026-11 the defaults were upstream's strawberry names (C:\data\projects\strawberry\...,
+C:\strawberry_msvc_<arch>_<build type>, jom in ...\strawberry-msvc\tools\jom). Moving to the akousma folders:
+  - Downloads and git clones (-DownloadsPath, -SrcPath) don't depend on where they are: move them (Move-Item) to the
+    new place and nothing is downloaded or cloned again. Without a move, the downloaded files of
+    C:\data\projects\strawberry\msvc_\downloads are copied once (see "Old downloads").
+  - The dependency prefix and the build trees can't be moved: their absolute paths are baked into the .pc and
+    CMake config files, qt.conf, libtool .la files and the build trees. In new folders every dependency is built
+    again from scratch (hours, like a first build). The script warns when the old default prefix is still there.
+  - Delete the old strawberry folders once the build in the new folders works.
+  - Upstream's prebuilt strawberry-msvc-<arch>-<type>.tar.xz packages only work at the path they were built for:
+    extract one to C:\strawberry_msvc_<arch>_<type> as upstream's README says and pass that as -PrefixPath.
+Names that stay strawberry because they are upstream's: StrawberryPackageVersions.txt, the strawberry-msvc-dependencies
+build.yaml (-CiVersionsRef) and release assets, the strawberrymusicplayer repositories and downloads, Strawberry Perl,
+and the -Old* defaults (where upstream's script puts things).
 
 Old downloads: C:\data\projects\strawberry\msvc_\downloads is copied only once, and only the downloaded files missing
 in -DownloadsPath (no folders, nothing overwritten).
