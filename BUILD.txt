@@ -111,7 +111,9 @@ Before the first arm64 build:
   - Visual Studio Installer > Modify > Individual components: "MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools
     (Latest)" (Microsoft.VisualStudio.Component.VC.Tools.ARM64), and "Windows 11 SDK (10.0.22621.0)"
     (Microsoft.VisualStudio.Component.Windows11SDK.22621): ICU's ARM64 configuration asks for exactly that SDK.
-    The script stops with a message when the ARM64 build tools are missing.
+    The script stops with a message when the ARM64 build tools are missing. The x64 build tools ("MSVC v143 - VS 2022
+    C++ x64/x86 build tools", part of the C++ workload) are needed too: libpsl and ffmpeg compile helper programs for the
+    x64 PC itself.
   - Nothing for Rust: gst-plugins-rs (Spotify) is not built for arm64, the arm64 installer doesn't contain it (as for
     x86). If you build it anyway (-Only gst-plugins-rs), the script runs rustup target add aarch64-pc-windows-msvc.
 
@@ -133,8 +135,12 @@ What is different from a native arm64 build:
     run, and the packages see the arm64 CPU), the arm64 prefix for libraries and headers, QT_HOST_PATH = the x64 prefix.
     Akousma also gets -DTARGET_ARCH=arm64 (for the installer).
   - Meson packages: --cross-file / --native-file (meson-cross-arm64.ini and meson-native-x64.ini, written to the arm64
-    build tree). meson logs "Compiler for language c for the build machine not found": expected, nothing is
-    compiled for the x64 PC.
+    build tree). The native file gives meson Visual Studio's x64 compiler (Hostx64\x64, with the x64 libraries) for
+    the x64 PC: meson checks the build machine's compiler by running a program made with it, and libpsl and ffmpeg
+    build and run helper programs with it. Without that file entry meson would take the arm64 cl from PATH.
+  - Windows error dialogs are off for the arm64 run (SetErrorMode, inherited by every program it starts): a program
+    for the wrong machine type or a crash makes the step fail instead of waiting at a "Machine Type Mismatch" or
+    "... has stopped working" dialog.
   - pkg-config is the x64 pkgconf, reading only the arm64 prefix's .pc files. The x64 prefix's bin folder comes first
     on PATH, so a program found on PATH is the x64 one.
   - ICU: the x64 configuration of ICU's solution is built first in the arm64 ICU tree (its tools make the arm64 data

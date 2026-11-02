@@ -873,6 +873,11 @@ finally {
   foreach ($name in $StartEnv.Keys) {
     if ([Environment]::GetEnvironmentVariable($name) -cne $StartEnv[$name]) { [Environment]::SetEnvironmentVariable($name, $StartEnv[$name]) }
   }
+  # And the Windows error mode the build part changed (arm64 cross-compile: no error dialogs), in this same session.
+  if ($null -ne $global:AkousmaPreviousErrorMode) {
+    try { [void][Akousma.ErrorMode]::SetErrorMode([uint32]$global:AkousmaPreviousErrorMode) } catch { }
+    Remove-Variable -Name AkousmaPreviousErrorMode -Scope Global -ErrorAction SilentlyContinue
+  }
 }
 if ($BuildExitCode) { exit $BuildExitCode }
 return
@@ -1320,6 +1325,26 @@ $host_prefix_path = ""
 if ($cross_build) {
   $host_prefix_path = if ($HostPrefixPath) { $HostPrefixPath } else { "$work_root/akousma_msvc_x86_64_${build_type}" }
   $host_prefix_path = $host_prefix_path.Replace('\', '/').TrimEnd('/')
+}
+# Cross-compile: no Windows error dialogs. A build tool that starts an arm64 program (x64 Windows: "Machine Type Mismatch"),
+# a program that crashes or a missing drive would stop the unattended build at a modal dialog until someone clicks OK. With
+# these error-mode flags the failed start or the crash is only an error code for the program that started it. Child processes
+# inherit the error mode. It is per process: the preparation part puts this session's previous mode back at the end.
+if ($cross_build) {
+  try {
+    if (-not ('Akousma.ErrorMode' -as [type])) {
+      Add-Type -Namespace Akousma -Name ErrorMode -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern uint GetErrorMode();
+[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);
+'@
+    }
+    # SEM_FAILCRITICALERRORS (0x1) | SEM_NOGPFAULTERRORBOX (0x2) | SEM_NOOPENFILEERRORBOX (0x8000), on top of the current flags
+    $previous_error_mode = [Akousma.ErrorMode]::SetErrorMode([uint32]([Akousma.ErrorMode]::GetErrorMode() -bor 0x8003))
+    if ($null -eq $global:AkousmaPreviousErrorMode) { $global:AkousmaPreviousErrorMode = $previous_error_mode }
+  }
+  catch {
+    Write-Warning "Could not turn off Windows error dialogs (SetErrorMode): $($_.Exception.Message). A program for the wrong machine type or a crash may stop the build at a dialog."
+  }
 }
 $qt_dev = "OFF"
 $gst_dev = "OFF"
@@ -2079,8 +2104,13 @@ function Get-MesonCrossArgs {
   #    aarch64-pc-windows-msvc (gst-plugins-rs' cargo_wrapper.py passes the --target on). pkg_config_libdir: only the arm64
   #    .pc files. needs_exe_wrapper: nothing built here is run.
   #  - native file = the x64 PC (meson's build machine): the same programs, and the x64 .pc files for dependency(native: true).
-  #    It has no C compiler: cl.exe in this environment makes arm64 code, so meson reports "Compiler for language c for the
-  #    build machine not found", which is fine as long as a project doesn't compile anything for the build machine.
+  #    C/C++: meson also looks for compilers of the project's languages for the build machine (not required), and runs the
+  #    sanity-check program it builds with them (sanity_check_for_c.exe; the arm64 compiler's check only compiles, because of
+  #    needs_exe_wrapper). With no entry here it takes cl from PATH, which makes arm64 code: Windows can't start that and shows
+  #    a modal "Machine Type Mismatch" dialog. libpsl (meson.get_compiler('c', native: true).run()) and ffmpeg (libswscale's
+  #    ops_asmgen, executable(native: true)) need a working one, so it gets the x64 compiler (Get-BuildMachineMsvc). Without
+  #    one: a name that doesn't exist, so meson reports "Compiler for language c for the build machine not found" and runs
+  #    nothing (Assert-CrossHostTools stops libpsl and ffmpeg before the build then).
   # In the build folder of the whole build (-build_path), shared by all packages: not MesonBuild's -build_path, the
   # package's own (relative) "build" folder, which a clean rebuild removes.
   $tools = [ordered]@{ 'pkg-config' = "$script:host_prefix_path/bin/pkgconf.exe" }
@@ -2097,12 +2127,46 @@ function Get-MesonCrossArgs {
     "rust = ['rustc', '--target', 'aarch64-pc-windows-msvc']", $binaries, "",
     "[properties]", "needs_exe_wrapper = true", "pkg_config_libdir = ['$script:prefix_path/lib/pkgconfig']", ""
   ) -join "`n")
+  $msvc = Get-BuildMachineMsvc
+  if ($msvc) {
+    $build_cc = @("c = '$($msvc.Bin)/cl.exe'", "cpp = '$($msvc.Bin)/cl.exe'", "c_ld = '$($msvc.Bin)/link.exe'",
+                  "cpp_ld = '$($msvc.Bin)/link.exe'", "ar = '$($msvc.Bin)/lib.exe'")
+    $link_args = "[" + (($msvc.LibPaths | ForEach-Object { "'/LIBPATH:$_'" }) -join ", ") + "]"
+    $build_options = @("[built-in options]", "c_link_args = $link_args", "cpp_link_args = $link_args", "")
+  }
+  else {
+    $build_cc = @("c = 'no-x64-build-machine-compiler'", "cpp = 'no-x64-build-machine-compiler'")
+    $build_options = @()
+  }
   Write-TextFileIfChanged $native_file (@(
     "# Written by Build-Akousma.ps1: the x64 PC of the arm64 cross-compile (meson setup --native-file).",
-    "[binaries]", $binaries, "",
+    "[binaries]") + $build_cc + @($binaries, "",
     "[properties]", "pkg_config_libdir = ['$script:host_prefix_path/lib/pkgconfig']", ""
-  ) -join "`n")
+  ) + $build_options -join "`n")
   return @("--cross-file=$cross_file", "--native-file=$native_file") + @(Get-CrossPackageArgs)
+}
+
+function Get-BuildMachineMsvc {
+  # The x64 compiler for meson's build machine, from the Visual Studio of this (arm64) environment: Hostx64\x64, next to the
+  # Hostx64\arm64 compiler on PATH. Its libraries: this environment's LIB has the arm64 folders (VC, UCRT, Windows SDK), so the
+  # same folders with x64, for /LIBPATH, which link searches before LIB. INCLUDE is the same for x64 and arm64. Nothing in the
+  # environment changes: the arm64 compiler stays as it is. $null when the x64 tools or libraries are missing.
+  if (-not $env:VCToolsInstallDir) { return $null }
+  $bin = (Join-Path $env:VCToolsInstallDir "bin/Hostx64/x64").Replace('\', '/')
+  foreach ($exe in "cl.exe", "link.exe", "lib.exe") {
+    if (-not (Test-Path -LiteralPath "$bin/$exe")) { return $null }
+  }
+  $lib_paths = @("$env:LIB" -split ';' | ForEach-Object {
+      if ($_ -match '^(.+[\\/])arm64[\\/]?$') {
+        $x64_dir = ($Matches[1] + "x64").Replace('\', '/')
+        if (Test-Path -LiteralPath $x64_dir) { $x64_dir }
+      }
+    } | Select-Object -Unique)
+  # the C runtime (VC), the Universal CRT and the Windows SDK libraries
+  foreach ($lib in "msvcrt.lib", "ucrt.lib", "kernel32.lib") {
+    if (-not ($lib_paths | Where-Object { Test-Path -LiteralPath "$_/$lib" })) { return $null }
+  }
+  return @{ Bin = $bin; LibPaths = $lib_paths }
 }
 
 function Assert-CrossHostTools([string[]]$queue) {
@@ -2122,6 +2186,13 @@ function Assert-CrossHostTools([string[]]$queue) {
   $missing = foreach ($rel in $needs.Keys) {
     $for = @($needs[$rel] | Where-Object { $queue -contains $_ })
     if ($for.Count -gt 0 -and -not (Test-Path -LiteralPath "$script:host_prefix_path/$rel")) { "  $script:host_prefix_path/$rel   (for $(Format-NameList $for))" }
+  }
+  # meson packages that compile and run programs for the x64 PC itself (see Get-MesonCrossArgs)
+  $build_cc_users = @($queue | Where-Object { $_ -in 'libpsl', 'ffmpeg' })
+  if ($build_cc_users.Count -gt 0 -and -not (Get-BuildMachineMsvc)) {
+    throw ("The arm64 cross-compile of $(Format-NameList $build_cc_users) also compiles programs for the x64 PC, with Visual Studio's x64 compiler, " +
+           "which this environment doesn't have complete (VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe, and x64 folders next to the arm64 ones in LIB). Visual Studio " +
+           "Installer > Modify > Individual components: 'MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)' (Microsoft.VisualStudio.Component.VC.Tools.x86.x64).")
   }
   if ($missing) {
     throw ("The arm64 cross-compile runs x64 programs from the x64 prefix (-HostPrefixPath), and these are missing:`n" + ($missing -join "`n") +
