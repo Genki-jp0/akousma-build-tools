@@ -2091,6 +2091,12 @@ function Get-CrossPackageArgs {
     # chromaprint builds its test suite by default (BUILD_TESTS ON); gtest_discover_tests then runs the new all_tests.exe at
     # build time to list its tests, and the x64 PC can't run an arm64 exe. The tests aren't installed; x64 / x86 keep them.
     "chromaprint" { return @("-DBUILD_TESTS=OFF") }
+    # qtimageformats' FindWrapWebP.cmake starts with find_package(WebP), whose config libwebp installs as share/WebP/cmake.
+    # CMAKE_PREFIX_PATH (<arm64 prefix>/lib/cmake) doesn't reach it, so CMake next searches the prefixes of the PATH entries,
+    # where the x64 prefix's bin comes first: qwebp.dll was linked against the x64 libwebp (LNK4272, unresolved WebP*). jp2
+    # and tiff are fine: FindJasper / FindTIFF use find_path / find_library (CMAKE_INCLUDE_PATH / CMAKE_LIBRARY_PATH) and
+    # tiff's config is in lib/cmake/tiff.
+    "qtimageformats" { return @("-DWebP_DIR=$script:prefix_path/share/WebP/cmake") }
   }
   return @()
 }
