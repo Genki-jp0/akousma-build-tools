@@ -2083,6 +2083,11 @@ function Get-CrossPackageArgs {
     "akousma" { return @("-DTARGET_ARCH=arm64") }
     # orc's test suite runs orcc (guarded upstream for cross builds; off here anyway, nothing uses it)
     "orc"     { return @("-Dtests=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled") }
+    # jasper reads __STDC_VERSION__ by running a test program (try_run), which a cross-compile can't, and then stops unless
+    # JAS_STDC_VERSION is given. It compiles with CMAKE_C_STANDARD 11, which CMake turns into -std:c11 for MSVC 19.27 and
+    # later, and cl.exe defines __STDC_VERSION__ as 201112L for -std:c11 (what the native x64 / x86 builds get from try_run).
+    # Untyped on purpose: jasper sets it with set(... CACHE INTERNAL), which overwrites a typed -D value with "0L".
+    "jasper"  { return @("-DJAS_STDC_VERSION=201112L") }
   }
   return @()
 }
