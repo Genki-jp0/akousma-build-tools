@@ -2088,6 +2088,9 @@ function Get-CrossPackageArgs {
     # later, and cl.exe defines __STDC_VERSION__ as 201112L for -std:c11 (what the native x64 / x86 builds get from try_run).
     # Untyped on purpose: jasper sets it with set(... CACHE INTERNAL), which overwrites a typed -D value with "0L".
     "jasper"  { return @("-DJAS_STDC_VERSION=201112L") }
+    # chromaprint builds its test suite by default (BUILD_TESTS ON); gtest_discover_tests then runs the new all_tests.exe at
+    # build time to list its tests, and the x64 PC can't run an arm64 exe. The tests aren't installed; x64 / x86 keep them.
+    "chromaprint" { return @("-DBUILD_TESTS=OFF") }
   }
   return @()
 }
