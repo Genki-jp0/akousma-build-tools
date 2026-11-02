@@ -963,8 +963,8 @@ function RemovePathFromEnvPath() {
 # --- patched: no fixed drive letters or install folders ---------------------------------
 # Defaults hang off AKOUSMA_WORK_ROOT (set from -WorkRoot), else C: (upstream's default, whatever drive this script is on). Tools are found
 # on PATH first, then via registry (Git, Python, 7-Zip, CMake), then in the usual install
-# folders under Program Files / LOCALAPPDATA\Programs / the system drive / the work drive,
-# then in any folders listed in SMB_TOOL_PATHS (';'-separated).
+# folders under Program Files / LOCALAPPDATA\Programs / the system drive / the work drive, then under the root and
+# Program Files of every other fixed drive, then in any folders listed in SMB_TOOL_PATHS (';'-separated).
 function Get-WorkRoot {
   if ($env:AKOUSMA_WORK_ROOT) { return $env:AKOUSMA_WORK_ROOT.Replace('\', '/').TrimEnd('/') }
   return 'C:'
@@ -992,10 +992,32 @@ function Get-RegistryString {
   return $null
 }
 
+function Get-FixedDriveRoots {
+  # Root of every fixed drive that is ready ('C:\', 'E:\', ...); never throws (no drives -> empty list)
+  try {
+    return @([System.IO.DriveInfo]::GetDrives() | Where-Object {
+        try { $_.DriveType -eq 'Fixed' -and $_.IsReady } catch { $false }
+      } | ForEach-Object { $_.Name })
+  } catch {
+    return @()
+  }
+}
+
 function Get-ToolSearchRoots {
   $work = Get-WorkRoot
-  return @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA/Programs", "$env:SystemDrive/", "$work/") |
-    Where-Object { $_ } | ForEach-Object { $_.Replace('\', '/').TrimEnd('/') } | Select-Object -Unique
+  $roots = @(@($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA/Programs", "$env:SystemDrive/", "$work/") |
+    Where-Object { $_ } | ForEach-Object { $_.Replace('\', '/').TrimEnd('/') } | Select-Object -Unique)
+  # then the root and Program Files of every other fixed drive (after the folders above, so they win)
+  $seen = [System.Collections.Generic.HashSet[string]]::new([string[]]$roots, [System.StringComparer]::OrdinalIgnoreCase)
+  $system_drive = "$env:SystemDrive".Replace('\', '/').TrimEnd('/')
+  $extra = foreach ($d in (Get-FixedDriveRoots)) {
+    $d = "$d".Replace('\', '/').TrimEnd('/')
+    if (-not $d) { continue }
+    $d
+    if ($d -ne $system_drive) { "$d/Program Files"; "$d/Program Files (x86)" }
+  }
+  foreach ($r in $extra) { if ($seen.Add($r)) { $roots += $r } }
+  return $roots
 }
 
 function Get-ToolCandidateDirs {
