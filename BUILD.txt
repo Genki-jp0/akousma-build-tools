@@ -26,9 +26,36 @@ Commits that are not pushed yet are only in a local checkout: build those with -
 Requirements
 ------------
 The tools in README.md (Git, PowerShell 7, Visual Studio 2022/2026, CMake, Meson, NASM, Strawberry Perl, Python,
-7-Zip, win_flex_bison, Rust, NSIS with the LockedList plugin). They are found on PATH, through the registry and in
-the usual install folders; add other folders (';'-separated) with $env:SMB_TOOL_PATHS. Missing tools are all
-reported together before anything is built.
+7-Zip, win_flex_bison, Rust, NSIS with the LockedList plugin).
+
+Recommended: put each tool's folder on your system or user PATH. The script looks for every tool on PATH first
+(Get-Command, after it has set up the Visual Studio environment). Only a tool that isn't on PATH is searched for, in
+this order:
+  1. its registry entry or usual folder: Git (Git for Windows, for sed / patch / bzip2), Strawberry Perl, 7-Zip,
+     CMake, Python (3.10 or newer, newest first)
+  2. the folders in $env:SMB_TOOL_PATHS (';'-separated; each one the folder that has the .exe). Not for Python.
+  3. Program Files, Program Files (x86), %LOCALAPPDATA%\Programs, the root of the system drive and of the work drive
+  4. the root and the Program Files folders of every other fixed drive, e.g. E:\win_flex_bison
+In 3 and 4 it looks in the tool's usual folder (win_flex_bison or winflexbison, NASM, 7-Zip, CMake\bin, Meson,
+Strawberry\perl\bin, Git\usr\bin, Python3xx). A tool found by the search is added to PATH for that run only.
+The tools are checked one at a time before anything is built, and the run stops at the first one that is missing
+("Missing <tool>. ..."): after installing it, run again to see whether another one is missing.
+
+win_flex_bison is a zip with no installer, so neither PATH nor the registry knows it: unpack it to
+<drive>:\win_flex_bison (found by 3 or 4), or add its folder to PATH yourself. To add a folder to your user PATH permanently (PowerShell):
+
+  $dir  = 'E:\win_flex_bison'
+  $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+  [Environment]::SetEnvironmentVariable('Path', "$user;$dir".Trim(';'), 'User')
+
+New terminal windows get the new PATH; a window that is already open keeps its old one (open a new one).
+
+Not searched for, so they have to be on PATH:
+  - makensis (NSIS): add its folder (C:\Program Files (x86)\NSIS), as README.md says. It is not checked beforehand:
+    without it the run fails at the end, when it makes the installer (akousma-setup).
+  - ninja: it comes from the Visual Studio environment the script sets up (the "C++ CMake tools for Windows"
+    component, part of the "Desktop development with C++" workload). Nothing to do when that component is installed;
+    otherwise put a folder with ninja.exe on PATH.
 
 
 Running it

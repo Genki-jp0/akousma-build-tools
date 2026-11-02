@@ -36,9 +36,11 @@
   Run it in PowerShell 7 (pwsh) from anywhere; the build tools are the folder this script is in.
 
   Tools the build expects (Git, Strawberry Perl, nasm, CMake, 7-Zip, Python, win_flex_bison, Meson, NSIS with the LockedList
-  plugin, Visual Studio) are installed programs. They are found on PATH first, then through the registry and the usual install
-  folders; add other folders (';'-separated) with $env:SMB_TOOL_PATHS. The root and Program Files of every fixed drive are
-  searched too. Missing tools are all reported together before anything is built.
+  plugin, Visual Studio) are installed programs. Putting each tool's folder on PATH is the recommended setup: a tool is looked
+  for on PATH first, and only one that isn't there is searched for: its registry entry or usual folder, then the folders in
+  $env:SMB_TOOL_PATHS (';'-separated; not for Python), then Program Files, LOCALAPPDATA\Programs, the system and work drives,
+  and the root and Program Files of every other fixed drive. makensis (NSIS) and ninja (from the Visual Studio environment)
+  are not searched for. The tools are checked one at a time before anything is built; the run stops at the first missing one.
 
   Change detection: every package's build is stamped with what went into it (version / git commit, patch hashes, build
   recipe). A run skips what is up to date, rebuilds what changed (dependencies from a clean copy, Akousma incrementally) and
@@ -967,9 +969,11 @@ function RemovePathFromEnvPath() {
 
 # --- patched: no fixed drive letters or install folders ---------------------------------
 # Defaults hang off AKOUSMA_WORK_ROOT (set from -WorkRoot), else C: (upstream's default, whatever drive this script is on). Tools are found
-# on PATH first, then via registry (Git, Python, 7-Zip, CMake), then in the usual install
+# on PATH first. A tool that isn't on PATH is searched for (the "Check for required tools" loop) via its registry entry or
+# known folder (Git, Strawberry Perl, 7-Zip, CMake, Python), then in any folders listed in SMB_TOOL_PATHS (';'-separated;
+# Get-ToolCandidateDirs puts them before the search roots; Get-PythonDirs doesn't read them), then in the usual install
 # folders under Program Files / LOCALAPPDATA\Programs / the system drive / the work drive, then under the root and
-# Program Files of every other fixed drive, then in any folders listed in SMB_TOOL_PATHS (';'-separated).
+# Program Files of every other fixed drive (Get-ToolSearchRoots).
 function Get-WorkRoot {
   if ($env:AKOUSMA_WORK_ROOT) { return $env:AKOUSMA_WORK_ROOT.Replace('\', '/').TrimEnd('/') }
   return 'C:'
