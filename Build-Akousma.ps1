@@ -2285,6 +2285,22 @@ function MSBuildProject {
       throw "MSBuild failed (the x64 build of ICU's tools for the arm64 cross-compile)"
     }
   }
+  # ICU's allinone\Build.Windows.ProjectConfiguration.props pins WindowsTargetPlatformVersion 10.0.22621.0 for ARM and ARM64
+  # (x64 and Win32 get "10.0", the newest SDK installed): without that SDK, MSB8036 stops the ARM64 build at its first project.
+  # The ARM64 build compiles and links with this environment's INCLUDE / LIB (UseEnv=true), i.e. the SDK the Visual Studio
+  # environment chose ($env:WindowsSDKVersion), so MSBuild gets that version too, whether 10.0.22621.0 is installed or not:
+  # one SDK for headers, libraries and MSBuild's own SDK checks. A command-line property overrides the props file.
+  # The x64 tools build above keeps ICU's "10.0".
+  if ($script:smb_component -eq "icu4c" -and $platform -eq "arm64") {
+    $sdk_version = "$env:WindowsSDKVersion".Trim().TrimEnd('\', '/')
+    if ($sdk_version -match '^\d+\.\d+\.\d+\.\d+$') {
+      Write-Host "ICU ARM64: Windows SDK $sdk_version (this environment's) instead of ICU's 10.0.22621.0" -ForegroundColor Cyan
+      $build_args += "-p:WindowsTargetPlatformVersion=$sdk_version"
+    }
+    else {
+      Write-Warning "ICU ARM64: WindowsSDKVersion is not set in this environment ('$env:WindowsSDKVersion'); MSBuild uses ICU's Windows SDK 10.0.22621.0."
+    }
+  }
   & msbuild @build_args
   if ($LASTEXITCODE -ne 0) {
     throw "MSBuild failed"
@@ -5240,9 +5256,16 @@ function Clear-ForCleanBuild([string]$path) {
   # build touches it in this process, so nothing from the previous build lingers. Never outside build_path.
   if (-not $path -or -not $script:smb_component -or -not $script:smb_clean_packages.Contains($script:smb_component)) { return }
   $full = [System.IO.Path]::GetFullPath($path, (Get-Location).Path).TrimEnd('\', '/')
-  if (-not $script:smb_cleaned_dirs.Add($full)) { return }   # once per folder: never remove what this build just made
   $root = [System.IO.Path]::GetFullPath($script:build_path).TrimEnd('\', '/')
-  if (-not $full.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return }
+  $sep = [System.IO.Path]::DirectorySeparatorChar
+  if (-not $full.StartsWith($root + $sep, [StringComparison]::OrdinalIgnoreCase)) { return }
+  # Once per folder, and never inside a folder already cleaned in this process: never remove what this build just made.
+  # Such a folder is the fresh tree ExtractPackage just unpacked (or a fresh source copy), so a folder in it came from the
+  # tarball: tiff's own build\ (its CMakeLists.txt does add_subdirectory(build)) is also CMakeBuild's default build folder.
+  foreach ($cleaned in $script:smb_cleaned_dirs) {
+    if ($full.StartsWith($cleaned + $sep, [StringComparison]::OrdinalIgnoreCase)) { return }
+  }
+  if (-not $script:smb_cleaned_dirs.Add($full)) { return }
   if (Test-Path -LiteralPath $full) {
     Write-Host "Clean rebuild of $($script:smb_component): removing $full" -ForegroundColor DarkYellow
     Remove-Item -LiteralPath $full -Recurse -Force
