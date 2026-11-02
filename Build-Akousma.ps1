@@ -1346,6 +1346,24 @@ if ($cross_build) {
     Write-Warning "Could not turn off Windows error dialogs (SetErrorMode): $($_.Exception.Message). A program for the wrong machine type or a crash may stop the build at a dialog."
   }
 }
+# arm64 (cross-compile or not): OpenSSL's Configure. Build-OpenSSL passes LDLIBS=onecore.lib <zlib> on arm64 (VC-WIN64-ARM sets
+# ex_libs to onecore.lib alone, which drops the zlib library the Windows base config adds) and /FS on every architecture.
+# Configure refuses a make variable on its command line (VAR=value) together with extra compiler flags such as /FS ("Mixing
+# make variables and additional compiler/linker flags as configure command line option is not permitted"), and INSTALL.md
+# says it ignores LDLIBS from the environment when such flags are given. /FS (serialised writes to a shared compiler PDB) has
+# nothing to do in OpenSSL: it compiles with /Z7, debug information in each .obj and no compiler PDB. So on arm64 this drops
+# /FS from Configure's arguments when LDLIBS= is among them; x64 and x86 (no LDLIBS=, and this is not defined) keep it. Here,
+# not in Build-OpenSSL: its text is part of OpenSSL's change-detection stamp, so the x64 and x86 builds stay up to date.
+if ($arch -eq "arm64") {
+  function script:perl {
+    $perl_args = @($args)
+    if ($perl_args.Count -gt 0 -and $perl_args[0] -eq "Configure" -and @($perl_args | Where-Object { "$_" -like "LDLIBS=*" }).Count -gt 0) {
+      $perl_args = @($perl_args | Where-Object { "$_" -ne "/FS" })
+    }
+    $perl_exe = Get-Command -Name perl -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    & $perl_exe.Source @perl_args
+  }
+}
 $qt_dev = "OFF"
 $gst_dev = "OFF"
 
