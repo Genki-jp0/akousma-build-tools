@@ -144,7 +144,7 @@ jobs:
       # Source archives (and the git clones, which the script keeps in the same folder).
       - name: Restore downloads
         id: downloads
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.AKOUSMA_DIR }}/msvc_/downloads
           key: akousma-downloads-${{ inputs.arch }}-${{ hashFiles('StrawberryPackageVersions.txt') }}
@@ -179,7 +179,7 @@ jobs:
       # Saved even when the build fails, so a rerun doesn't download everything again.
       - name: Save downloads
         if: always() && steps.downloads.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.AKOUSMA_DIR }}/msvc_/downloads
           key: ${{ steps.downloads.outputs.cache-primary-key }}
