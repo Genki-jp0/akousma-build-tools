@@ -14,7 +14,7 @@ strawberry-msvc-build-tools at d7e0c51 with:
 * `BUILD.txt`: how to build, the parameters, the local patches and change detection.
 
 ```powershell
-.\Build-Akousma.ps1                                  # Akousma master, everything on C:
+.\Build-Akousma.ps1                                  # Akousma master, everything under C:\Atelier
 .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma     # a local checkout
 .\Build-Akousma.ps1 -WorkRoot E:\ -DryRun             # check a command line, build nothing
 ```

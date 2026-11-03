@@ -83,7 +83,8 @@
 .PARAMETER HostPrefixPath     -Arch arm64 on an x64 PC only: the x64 dependency prefix whose programs (pkg-config, Qt's
                               moc / rcc / uic / lrelease, orcc, glib-compile-resources, ...) the cross-compile runs. Default:
                               the prefix -Arch x64 uses with the same -WorkRoot / -PrefixPath / -BuildType
-                              (C:\akousma_msvc_x86_64_release). It has to be a finished x64 build of the same versions.
+                              (C:\Atelier\akousma_msvc_x86_64_release). It has to be a finished x64 build of the same
+                              versions.
 .PARAMETER Jobs               Parallel jobs in total (split between parallel packages). Default: logical processors.
 .PARAMETER ParallelPackages   Packages built at the same time. 0 = auto (half the jobs, min 2). 1 = one after the other.
 .PARAMETER Only / -Skip       Build only / never build these packages (when they need building). Akousma is "akousma", the
@@ -121,18 +122,21 @@
 .PARAMETER NoAutoPatches      Don't apply local-patches\ (only -GstGoodPatch). The build tools' own patches\ are always applied.
 .PARAMETER SkipBuild          Prepare everything (folders, caches, jom, downloads migration), but don't build.
 .PARAMETER RemoveOldCDrive    Delete the old C: build tree, prefix and downloads (-OldBuildPath, -OldPrefixPath, -OldDownloads).
-.PARAMETER WorkRoot           Drive/folder everything is built under. Default C:\, wherever this script is.
+.PARAMETER WorkRoot           Drive/folder everything is built under. Default C:\Atelier, wherever this script is (created
+                              when missing). Until 2026-11 it was C:\ (-WorkRoot C:\ -SaveSettings keeps those folders).
 .PARAMETER ProjectRoot, MsvcRoot, DownloadsPath, SrcPath, BuildPath, PrefixPath, JomDir, TempPath,
            PipCachePath, CargoHome, RustupHome, LogPath, LogDir
                               Locations. Empty = under the work root. With no path parameters the defaults are:
-                                ProjectRoot   C:\data\projects\akousma   (build.log; x86: build_x86.log)
-                                DownloadsPath C:\data\projects\akousma\msvc_\downloads   (SrcPath: the same; Akousma is
-                                              cloned to <SrcPath>\akousma)
-                                BuildPath     C:\data\projects\akousma\msvc_\build_<arch>_<build type>   (LogDir: ...\logs)
-                                PrefixPath    C:\akousma_msvc_<arch>_<build type>
-                                JomDir        C:\data\projects\akousma\tools\jom   (only when jom.exe is not on PATH)
-                                TempPath C:\temp, PipCachePath C:\cache\pip, CargoHome C:\cargo, RustupHome C:\rustup,
-                                LogPath C:\data\projects\akousma\build.log
+                                ProjectRoot   C:\Atelier\data\projects\akousma   (build.log; x86: build_x86.log)
+                                DownloadsPath C:\Atelier\data\projects\akousma\msvc_\downloads   (SrcPath: the same;
+                                              Akousma is cloned to <SrcPath>\akousma)
+                                BuildPath     C:\Atelier\data\projects\akousma\msvc_\build_<arch>_<build type>
+                                              (LogDir: ...\logs)
+                                PrefixPath    C:\Atelier\akousma_msvc_<arch>_<build type>
+                                JomDir        C:\Atelier\data\projects\akousma\tools\jom   (only when jom.exe is not
+                                              on PATH)
+                                TempPath C:\Atelier\temp, PipCachePath C:\Atelier\cache\pip, CargoHome C:\Atelier\cargo,
+                                RustupHome C:\Atelier\rustup, LogPath C:\Atelier\data\projects\akousma\build.log
                               Until 2026-11 the defaults used upstream's strawberry names (data\projects\strawberry,
                               strawberry_msvc_<arch>_<type>). Those folders are not used any more: the prefix and the build
                               trees have their absolute paths baked in, so the new folders are a full rebuild. Upstream's
@@ -148,7 +152,7 @@
 .PARAMETER GitBinPath         Git's bin folder, added to PATH. Empty = found through git.exe on PATH.
 
 .EXAMPLE
-  # Akousma master, everything on C:
+  # Akousma master, everything under C:\Atelier
   .\Build-Akousma.ps1
   # A tag or commit of Akousma, built on E:, with the dependency versions upstream's CI used at that time
   .\Build-Akousma.ps1 -AkousmaRef 7f216b8 -CiVersionsRef auto -WorkRoot E:\
@@ -333,7 +337,7 @@ $SettingsDefaults = [ordered]@{
   AkousmaRepo    = 'https://github.com/Genki-jp0/Akousma.git'
   AkousmaRef     = 'master'
   AkousmaSource  = ''
-  WorkRoot       = 'C:\'
+  WorkRoot       = 'C:\Atelier'
   ProjectRoot    = '{WorkRoot}\data\projects\akousma'
   MsvcRoot       = '{ProjectRoot}\msvc_'
   DownloadsPath  = '{MsvcRoot}\downloads'
@@ -621,8 +625,9 @@ function Copy-Tree($src, $dst) {
 # ---------------------------------------------------------------------
 # 0. Resolve locations (no drive letter or install folder is fixed in this script)
 # ---------------------------------------------------------------------
-# Work root: -WorkRoot if passed, else C:\ -- a fixed default, wherever this script is started from.
-# Every location below that you did not pass as a parameter hangs off it.
+# Work root: -WorkRoot if passed, else C:\Atelier -- a fixed default, wherever this script is started from (created with
+# the folders under it in "1. Redirect temp and caches"). Every location below that you did not pass as a parameter hangs
+# off it.
 function Normalize-Path([string]$p) {
   $p = $p.Replace('/', '\')
   if ($p -notmatch '^[A-Za-z]:\\$') { $p = $p.TrimEnd('\') }
@@ -654,8 +659,9 @@ function Test-SamePath($a, $b) {
   return ((Resolve-Path -LiteralPath $a).Path.TrimEnd('\') -ieq (Resolve-Path -LiteralPath $b).Path.TrimEnd('\'))
 }
 
-$WorkRoot = if ($WorkRoot) { $WorkRoot } else { 'C:\' }
-if ($WorkRoot.StartsWith('\\')) { $WorkRoot = "$env:SystemDrive\" }
+$workRootIsDefault = -not $WorkRoot
+$WorkRoot = if ($WorkRoot) { $WorkRoot } else { 'C:\Atelier' }
+if ($WorkRoot.StartsWith('\\')) { $WorkRoot = "$env:SystemDrive\Atelier" }   # UNC: the default folder, on the system drive
 $WorkRoot = (Normalize-Path $WorkRoot).TrimEnd('\')
 
 # The default folders are named akousma (data\projects\akousma, akousma_msvc_<arch>_<type>). Upstream's strawberry names
@@ -705,11 +711,15 @@ $OldDownloads  = Resolve-Default $OldDownloads  "$env:SystemDrive\data\projects\
 $OldBuildPath  = Resolve-Default $OldBuildPath  "$env:SystemDrive\data\projects\strawberry\msvc_\build_${Arch}_${BuildType}"
 $OldPrefixPath = Resolve-Default $OldPrefixPath "$env:SystemDrive\strawberry_msvc_${Arch}_${BuildType}"
 
-# The default prefix used to be <WorkRoot>\strawberry_msvc_<arch>_<type>. Say so when that one is still there and the new
-# one is not, so a full dependency rebuild doesn't come as a surprise.
-$oldDefaultPrefix = Normalize-Path "$WorkRoot\strawberry_msvc_${Arch}_${BuildType}"
-$prefixRenameNote = if ($prefixIsDefault -and (Test-Path -LiteralPath $oldDefaultPrefix) -and -not (Test-Path -LiteralPath (Join-Path $PrefixPath 'bin'))) {
-  "The default dependency prefix is $PrefixPath now (it was $oldDefaultPrefix). Every dependency is built again there, which takes hours. $oldDefaultPrefix is not used any more; delete it once the new build works."
+# The default prefix used to be <WorkRoot>\strawberry_msvc_<arch>_<type>, and the default work root C:\ (until 2026-11, so
+# C:\akousma_msvc_<arch>_<type>). Say so when an old one is still there and the new one is not, so a full dependency
+# rebuild doesn't come as a surprise.
+$oldDefaultPrefixes = @("$WorkRoot\strawberry_msvc_${Arch}_${BuildType}") +
+  @(if ($workRootIsDefault) { "C:\akousma_msvc_${Arch}_${BuildType}", "C:\strawberry_msvc_${Arch}_${BuildType}" })
+$oldDefaultPrefix = @($oldDefaultPrefixes | ForEach-Object { Normalize-Path $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
+$prefixRenameNote = if ($prefixIsDefault -and $oldDefaultPrefix -and -not (Test-Path -LiteralPath (Join-Path $PrefixPath 'bin'))) {
+  "The default dependency prefix is $PrefixPath now (it was $oldDefaultPrefix). Every dependency is built again there, which takes hours. $oldDefaultPrefix is not used any more; delete it once the new build works." +
+  $(if ((Split-Path -Leaf $oldDefaultPrefix) -like 'akousma_msvc_*') { " To keep building in the C:\ folders instead, run once with -WorkRoot C:\ -SaveSettings." })
 }
 
 # arm64 on an x64 PC: a cross-compile. arm64 programs don't run on x64 Windows, so the programs a build runs come from the
@@ -1108,7 +1118,7 @@ function RemovePathFromEnvPath() {
 }
 
 # --- patched: no fixed drive letters or install folders ---------------------------------
-# Defaults hang off AKOUSMA_WORK_ROOT (set from -WorkRoot), else C: (upstream's default, whatever drive this script is on). Tools are found
+# Defaults hang off AKOUSMA_WORK_ROOT (set from -WorkRoot), else C:\Atelier (the default -WorkRoot, wherever this script is). Tools are found
 # on PATH first. A tool that isn't on PATH is searched for (the "Check for required tools" loop) via its registry entry or
 # known folder (Git, Strawberry Perl, 7-Zip, CMake, Python), then in any folders listed in SMB_TOOL_PATHS (';'-separated;
 # Get-ToolCandidateDirs puts them before the search roots; Get-PythonDirs doesn't read them), then in the usual install
@@ -1116,7 +1126,7 @@ function RemovePathFromEnvPath() {
 # Program Files of every other fixed drive (Get-ToolSearchRoots).
 function Get-WorkRoot {
   if ($env:AKOUSMA_WORK_ROOT) { return $env:AKOUSMA_WORK_ROOT.Replace('\', '/').TrimEnd('/') }
-  return 'C:'
+  return 'C:/Atelier'
 }
 
 function Test-ExeInDir {

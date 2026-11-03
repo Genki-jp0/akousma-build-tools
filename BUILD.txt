@@ -62,7 +62,7 @@ Running it
 ----------
 In PowerShell 7 (pwsh), from anywhere:
 
-  .\Build-Akousma.ps1                                     Akousma master, everything on C:
+  .\Build-Akousma.ps1                                     Akousma master, everything under C:\Atelier
   .\Build-Akousma.ps1 -AkousmaRef v1.0.0                  a branch, tag or commit
   .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma       a local checkout
   .\Build-Akousma.ps1 -BuildType debug                    debug build (console window, "Akousma Debug" install folder)
@@ -116,7 +116,7 @@ several architectures they apply to each one.
 Each architecture has its own folders, so both coexist and an x86 build never touches the x64 one:
                     x64 (x86_64)                                  x86
   build tree        ...\msvc_\build_x86_64_release                 ...\msvc_\build_x86_release
-  prefix            C:\akousma_msvc_x86_64_release                 C:\akousma_msvc_x86_release
+  prefix            C:\Atelier\akousma_msvc_x86_64_release         C:\Atelier\akousma_msvc_x86_release
   logs              ...\build_x86_64_release\logs, build.log       ...\build_x86_release\logs, build_x86.log
   installer         ...\build_x86_64_release\AkousmaSetup\         ...\build_x86_release\AkousmaSetup\
                     AkousmaSetup-<version>-msvc-x64.exe            AkousmaSetup-<version>-msvc-x86.exe
@@ -172,11 +172,11 @@ or one at a time:
   .\Build-Akousma.ps1 -Arch x64
   .\Build-Akousma.ps1 -Arch arm64
 Add your other parameters as usual (-WorkRoot, -BuildPath, -PrefixPath, -AkousmaSource, ...). The x64 prefix is the
-one -Arch x64 uses with the same parameters (C:\akousma_msvc_x86_64_release by default; -DryRun -Arch arm64 shows it);
--HostPrefixPath <x64 prefix> names another one. Before it builds anything, the arm64 run checks that the x64 programs
-it needs are there and that the x64 Qt is the same version, and stops with a list otherwise.
+one -Arch x64 uses with the same parameters (C:\Atelier\akousma_msvc_x86_64_release by default; -DryRun -Arch arm64
+shows it); -HostPrefixPath <x64 prefix> names another one. Before it builds anything, the arm64 run checks that the x64
+programs it needs are there and that the x64 Qt is the same version, and stops with a list otherwise.
 The arm64 folders are the usual per-architecture ones (default build tree ...\msvc_\build_arm64_release, prefix
-C:\akousma_msvc_arm64_release; an explicit -BuildPath / -PrefixPath gets _arm64); the installer is
+C:\Atelier\akousma_msvc_arm64_release; an explicit -BuildPath / -PrefixPath gets _arm64); the installer is
 ...\build_arm64_release\AkousmaSetup\AkousmaSetup-<version>-msvc-arm64.exe. Test it on an arm64 PC.
 
 What is different from a native arm64 build:
@@ -253,12 +253,18 @@ strawberry-setup).
 
 Folders
 -------
-Everything goes to C: by default, wherever this folder is:
-  C:\data\projects\akousma\...               downloads, sources (Akousma in ...\msvc_\downloads\akousma), build tree,
+Everything goes under C:\Atelier by default (-WorkRoot; created when missing), wherever this folder is:
+  C:\Atelier\data\projects\akousma\...       downloads, sources (Akousma in ...\msvc_\downloads\akousma), build tree,
                                              build.log, jom (tools\jom)
-  C:\akousma_msvc_<arch>_<build type>        dependency prefix
-  C:\temp, C:\cache\pip, C:\cargo, C:\rustup
-To build on another drive, add -WorkRoot E:\ (or the single path parameters).
+  C:\Atelier\akousma_msvc_<arch>_<type>      dependency prefix
+  C:\Atelier\temp, C:\Atelier\cache\pip, C:\Atelier\cargo, C:\Atelier\rustup
+To build on another drive, add -WorkRoot E:\ (or the single path parameters). A UNC -WorkRoot (\\server\share) is not
+used: the build goes to <system drive>\Atelier then.
+
+Until 2026-11 the default -WorkRoot was C:\ (C:\data\projects\akousma\..., C:\akousma_msvc_<arch>_<type>, C:\temp, ...).
+A build-settings.json created before that keeps "WorkRoot": "C:\\", so nothing moves. Without one, the new default is
+used and every dependency is built again under C:\Atelier (the script warns when the old C:\ prefix is still there); to
+keep the C:\ folders, run once with -WorkRoot C:\ -SaveSettings.
 
 Until 2026-11 the defaults were upstream's strawberry names (C:\data\projects\strawberry\...,
 C:\strawberry_msvc_<arch>_<build type>, jom in ...\strawberry-msvc\tools\jom). Moving to the akousma folders:
