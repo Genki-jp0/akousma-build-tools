@@ -743,7 +743,7 @@ function Get-AkousmaCommitDate {
   $ref = if ($AkousmaSource) { 'HEAD' } else { $AkousmaRef }
   if (Test-Path -LiteralPath (Join-Path $repoDir '.git')) {
     if (-not $AkousmaSource) { & git -C $repoDir fetch --tags --force origin 2>$null | Out-Null }
-    foreach ($spec in @($ref, "origin/$ref")) {
+    foreach ($spec in @("origin/$ref", $ref)) {   # a branch: the fetched remote branch, not the (stale) local one
       $date = & git -C $repoDir log -1 --format=%cI "$spec^{commit}" 2>$null
       if ($LASTEXITCODE -eq 0 -and $date) { $global:LASTEXITCODE = 0; return ([datetime]([string]@($date)[0]).Trim()).ToUniversalTime() }
     }
@@ -1657,6 +1657,19 @@ function DownloadFileIfNotExists {
   }
 }
 
+function Get-GitRefSpec {
+  # How a pinned ref is resolved in a clone. A branch name means the remote's branch (origin/<ref>, as of the last fetch), not
+  # the clone's local branch of that name: a fetch doesn't move that one, so it would stay at the commit it was first cloned at.
+  # Tags and commits (and refs the remote doesn't have as a branch) resolve as they are.
+  param([string]$repo_path, [string]$ref)
+  if (-not $ref) { return $ref }
+  & git -C $repo_path show-ref --verify --quiet "refs/remotes/origin/$ref" 2>$null
+  $is_branch = $LASTEXITCODE -eq 0
+  $global:LASTEXITCODE = 0
+  if ($is_branch) { return "origin/$ref" }
+  return $ref
+}
+
 function SyncGitRepository {
   [CmdletBinding()]
   param(
@@ -1702,8 +1715,10 @@ function SyncGitRepository {
   }
 
   if ($pinned_ref) {
-    Write-Host "Checking out $repo_name @ $pinned_ref" -ForegroundColor Yellow
-    & git -C $repo_path checkout --force $pinned_ref
+    # A branch is checked out as the fetched remote branch (detached), so a new commit on it is built.
+    $checkout_ref = Get-GitRefSpec -repo_path $repo_path -ref $pinned_ref
+    Write-Host "Checking out $repo_name @ $pinned_ref$(if ($checkout_ref -ne $pinned_ref) { " ($checkout_ref)" })" -ForegroundColor Yellow
+    & git -C $repo_path -c advice.detachedHead=false checkout --force $checkout_ref
     if ($LASTEXITCODE -ne 0) { throw "Failed to check out $pinned_ref in $repo_name" }
     & git -C $repo_path submodule update --init --recursive
     if ($LASTEXITCODE -ne 0) { throw "Failed to update submodules of $repo_name" }
@@ -4958,16 +4973,24 @@ function Get-SmbRecipes {
 
 function Resolve-GitSourceId {
   # The commit a git-sourced package builds: the pinned ref (git_refs) resolved in the local clone, else the clone's HEAD.
-  # No network unless -sync and a pinned ref is not in the clone yet (then the clone is fetched, like the build would).
-  # Unpinned clones are not pulled here; the build pulls them as before, and the stamp records the commit it built.
+  # A pinned branch (e.g. -AkousmaRef master) resolves to origin/<branch>, and with -sync the clone is fetched first, so a new
+  # commit on the branch is seen as a change. Otherwise no network unless -sync and a pinned ref is not in the clone yet (then
+  # the clone is fetched, like the build would). Unpinned clones are not pulled here; the build pulls them as before, and the
+  # stamp records the commit it built.
   param([string]$repo, [switch]$sync)
   if ($repo -eq 'akousma' -and $akousma_source) { return (Get-AkousmaSourceId) }
   $path = "$($script:src_path)/$repo"
   $ref = $git_refs[$repo]
+  $fetched = $false
   for ($attempt = 0; $attempt -lt 2; $attempt++) {
     if (Test-Path -LiteralPath "$path/.git") {
-      $spec = if ($ref) { "$ref^{commit}" } else { "HEAD" }
-      $sha = & git -C $path rev-parse -q --verify $spec 2>$null
+      $spec = if ($ref) { Get-GitRefSpec -repo_path $path -ref $ref } else { "HEAD" }
+      if ($sync -and $ref -and -not $fetched -and $spec -ne $ref) {
+        $fetched = $true
+        & git -C $path fetch --tags --force origin 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Warning "Could not fetch $repo; using $spec as of its last fetch." }
+      }
+      $sha = & git -C $path rev-parse -q --verify "$spec^{commit}" 2>$null
       if ($LASTEXITCODE -eq 0 -and $sha) { return ([string]@($sha)[0]).Trim() }
     }
     if (-not $sync -or $attempt -gt 0 -or -not $ref -or -not (Test-Path -LiteralPath "$path/.git")) { break }
