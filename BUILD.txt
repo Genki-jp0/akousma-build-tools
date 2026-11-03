@@ -13,7 +13,8 @@ script for Akousma:
                             patches in local-patches\, never here.
   CopyDLLDependencies.ps1   upstream's helper that collects the DLLs for the installer
   StrawberryPackageVersions.txt
-                            upstream's dependency versions (name kept: it is upstream's file)
+                            the pinned dependency versions: upstream's file (name kept) at d7e0c51, plus libcdio
+  versions\                 the dependency versions of each Akousma release (1.0.0.txt, ...; see "Dependency versions")
 
 Akousma itself is NOT patched here any more. Its changes (album art, analyzer framerate, moodbar, playlist lock,
 tabbar background, window backdrop, branding, the Akousma names, the import from Strawberry / Clementine) are commits
@@ -72,7 +73,7 @@ In PowerShell 7 (pwsh), from anywhere:
 
 With your paths, now in akousma folders (see "Folders" for moving the old strawberry ones):
 
-  .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma -CiVersionsRef auto -WorkRoot E:\ -ProjectRoot E:\akousma\project -DownloadsPath E:\akousma\downloads -SrcPath E:\akousma\src -BuildPath C:\akousma\build -LogPath E:\data\projects\akousma\build.log
+  .\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma -WorkRoot E:\ -ProjectRoot E:\akousma\project -DownloadsPath E:\akousma\downloads -SrcPath E:\akousma\src -BuildPath C:\akousma\build -LogPath E:\data\projects\akousma\build.log
 
 From GitHub instead of your local checkout: replace -AkousmaSource E:\src\Akousma with -AkousmaRef master.
 
@@ -245,10 +246,11 @@ Unchanged: -BuildType, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebu
 -RebuildDependents, -VersionOverrides, -GitRefs, -VersionsFile, -CiVersionsFile, -CiVersionsRef, -GstGoodPatch,
 -NoAutoPatches, -SkipBuild, -RemoveOldCDrive, -WorkRoot and all the path parameters (-ProjectRoot, -MsvcRoot,
 -DownloadsPath, -SrcPath, -BuildPath, -PrefixPath, -JomDir, -TempPath, -PipCachePath, -CargoHome, -RustupHome,
--LogPath, -LogDir, -Old*, -GitBinPath). New: -DryRun, -SaveSettings (build-settings.json).
+-LogPath, -LogDir, -Old*, -GitBinPath). New: -DryRun, -SaveSettings (build-settings.json), -Deps, -FreezeDeps and
+-DepsUpstream (see "Dependency versions").
 -CiVersionsRef auto now picks the strawberry-msvc-dependencies build.yaml that existed when the Akousma commit being
-built was made. Package names for -Only / -Skip / -ForceRebuild: akousma (was strawberry) and akousma-setup (was
-strawberry-setup).
+built was made (with -CiVersionsRef or -CiVersionsFile, -Deps auto means pinned and the CI file's versions win).
+Package names for -Only / -Skip / -ForceRebuild: akousma (was strawberry) and akousma-setup (was strawberry-setup).
 
 
 Folders
@@ -318,6 +320,55 @@ Options:
   -ForceRebuild a,b      rebuild these anyway (e.g. -ForceRebuild gst-plugins-good; akousma = full rebuild)
   -NoChangeDetection     only build what has no output
   -RebuildDependents     also rebuild packages that link a rebuilt one (e.g. after a DLL rename)
+A new dependency version is a new download URL (or, for ffmpeg, which is built from git, the version itself), so the
+package is rebuilt. (The first run with the ffmpeg version in its stamp rebuilds ffmpeg once.)
+
+
+Dependency versions
+-------------------
+Upstream (strawberry-msvc-build-tools) moves its dependency versions all the time: .github/scripts/update.sh looks up
+each package's newest release every 15 minutes and opens a pull request per update ("Update expat"), which is merged
+only when upstream's CI (x64 and arm64, debug and release) has built it. So upstream master's
+StrawberryPackageVersions.txt is the newest set that is known to build. This repository keeps its own copy, as of
+d7e0c51 (the pinned versions), and -Deps picks which versions a run builds:
+
+  auto (default)   a release build uses the release's lock, every other build the latest versions:
+                     -AkousmaRef 1.0.0 / v1.0.0       versions\1.0.0.txt, when it exists
+                     -AkousmaRef <commit> or another tag on the commit a lock records: that lock
+                     -AkousmaSource at a tag or commit like that: that lock
+                     master, a branch, any other commit or checkout: latest
+                   (with -VersionsFile, -CiVersionsRef or -CiVersionsFile: pinned)
+  latest           upstream master's versions. For each package that changes, the build tools' patch for it (if any)
+                   has to be the same as upstream's: when upstream changed or removed it with the update, the package
+                   stays at the pinned version (warning: merge upstream to get it). Never older than pinned; packages
+                   upstream doesn't have (libcdio) stay pinned. Without network: pinned, with a warning.
+  pinned           StrawberryPackageVersions.txt (or -VersionsFile) as it is
+  1.0.0            versions\1.0.0.txt (a lock; -Deps <release>)
+-VersionOverrides win over all of them. Every run prints the versions that differ from the pinned ones and warns about
+patches that were written for another version: a local patch for a package whose version changes, upstream's
+StrawberryMSVCBuild.ps1 having changed since d7e0c51 (recipes the new versions may need), a lock's patches having
+changed since it was frozen. The versions a build used are in <BuildPath>\deps-versions.txt (same format). Several
+architectures in one run all get the versions resolved at its start; for an arm64 cross-compile started separately
+later, use the same -Deps lock (or pinned), so the x64 prefix it uses has the same versions.
+
+Releases:
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0 -FreezeDeps 1.0.0    build 1.0.0 with the latest versions and write
+                                                              versions\1.0.0.txt; commit that file
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0 -FreezeDeps 1.0.0 -DryRun
+                                                              only write the lock (no build)
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0                      later: 1.0.0 again, with its versions
+  .\Build-Akousma.ps1                                         master: the latest versions, as before
+  .\Build-Akousma.ps1 -Deps latest -DryRun                    which versions a run would use; builds nothing
+-FreezeDeps <release> writes the versions this run uses (whatever -Deps resolved to), the commits of the git-sourced
+dependencies (yasm, libffi, gst-plugins-rs, qtsparkle, pe-util; this run then builds those commits too), the Akousma
+commit, the build tools commit and the hashes of the patches. An existing lock is never replaced (delete it first).
+To freeze what an earlier build used: -VersionsFile <BuildPath>\deps-versions.txt -FreezeDeps 1.0.0.
+A lock holds versions, not recipes: if a later build tools commit changed a patch the lock's versions need, the run
+says so and names the build tools commit the lock was frozen with (git worktree add ..\tools-1.0.0 <commit>, and
+build from there, for the release's exact build).
+-DepsUpstream <branch|tag|commit|URL|folder>: where latest comes from (default master of strawberry-msvc-build-tools).
+-CiVersionsRef auto (the strawberry-msvc-dependencies build.yaml of the Akousma commit's date) still works and
+replaces -Deps.
 
 
 Installing over the old build

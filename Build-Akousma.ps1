@@ -46,6 +46,14 @@
   recipe). A run skips what is up to date, rebuilds what changed (dependencies from a clean copy, Akousma incrementally) and
   prints the decision for every package before it builds. See -ForceRebuild, -NoChangeDetection, -RebuildDependents.
 
+  Dependency versions (-Deps, default auto): a build of an Akousma release uses that release's lock, versions\<release>.txt
+  (tag 1.0.0 or v1.0.0, or the commit the lock records), so rebuilding 1.0.0 later builds the same dependency versions. Any
+  other build (master, a branch, a commit, a local checkout) uses the latest versions: the newest set upstream's CI has built
+  (strawberry-msvc-build-tools master's StrawberryPackageVersions.txt), with this repository's StrawberryPackageVersions.txt
+  (the pinned versions) for anything upstream doesn't have or whose build tools patch upstream changed with the update. The
+  run prints which versions differ from the pinned ones. -FreezeDeps 1.0.0 writes versions\1.0.0.txt from the versions of
+  that run. A package whose version changed is rebuilt (its version is part of its stamp).
+
   Local patches: every *.patch / *.diff in local-patches\ next to this script is applied (-p1) to the dependency its name
   starts with (qtbase-*.patch -> qtbase, gstreamer-*.patch -> gst-plugins-good, glib-networking-x.patch -> glib-networking,
   ...), or to <package> for local-patches\<package>\*.patch. Akousma's own changes are commits in the Akousma repository,
@@ -91,9 +99,10 @@
                               installer "akousma-setup".
 .PARAMETER List               Print the per-package decision (skip / adopt / build / rebuild and why) and the build queue,
                               then exit.
-.PARAMETER DryRun             Print the resolved locations, the Akousma source and the local patches, then exit. Changes
-                              nothing but build-settings.json (created when missing; written with -SaveSettings); also runs
-                              on Linux and macOS, for checking a command line.
+.PARAMETER DryRun             Print the resolved locations, the dependency versions, the Akousma source and the local
+                              patches, then exit. Changes nothing but build-settings.json (created when missing; written
+                              with -SaveSettings) and, with -FreezeDeps, the lock; also runs on Linux and macOS, for checking
+                              a command line.
 .PARAMETER SaveSettings       Write the settings passed on this command line (-Arch, -BuildType, -AkousmaRepo, -AkousmaRef,
                               -AkousmaSource, -WorkRoot and the other locations) into build-settings.json, so later runs use
                               them without passing them. Paths are saved absolute. -Arch x64,x86 -SaveSettings: from now
@@ -110,9 +119,22 @@
 .PARAMETER VersionOverrides   e.g. -VersionOverrides @{ qt_version = '6.11.2' }
 .PARAMETER GitRefs            e.g. -GitRefs @{ 'gst-plugins-rs' = '0.15.3' }. glib-networking is pinned automatically to the
                               commit this repository's patches\glib-networking.patch applies to; an entry here wins.
-.PARAMETER VersionsFile       Alternative StrawberryPackageVersions.txt.
+.PARAMETER Deps               Dependency versions. auto (default; build-settings.json "Deps"): the lock of the Akousma release
+                              being built, else latest. latest: upstream strawberry-msvc-build-tools master's tested versions,
+                              each one only when this repository's patch for it is still upstream's (else pinned, with a
+                              warning); no network = pinned, with a warning. pinned: StrawberryPackageVersions.txt (or
+                              -VersionsFile) as it is. <release>, e.g. 1.0.0: versions\<release>.txt. -VersionOverrides win
+                              over all of them. The versions used are written to <BuildPath>\deps-versions.txt.
+.PARAMETER FreezeDeps         Write versions\<release>.txt (e.g. -FreezeDeps 1.0.0) from the versions this run uses, plus the
+                              commits of the git-sourced dependencies (yasm, libffi, gst-plugins-rs, qtsparkle, pe-util), which
+                              this run then builds too. Commit the file. An existing lock is never replaced. With -DryRun:
+                              write the lock, build nothing.
+.PARAMETER DepsUpstream       Where -Deps latest reads upstream's versions: a branch, tag or (full) commit of
+                              strawberry-msvc-build-tools (default master), a raw-file URL or a folder.
+.PARAMETER VersionsFile       Alternative StrawberryPackageVersions.txt (the pinned versions; -Deps auto then means pinned).
 .PARAMETER CiVersionsFile     strawberry-msvc-dependencies build.yaml (path/URL) whose *_version values win.
-.PARAMETER CiVersionsRef      Fetch strawberry-msvc-dependencies' build.yaml automatically (ignored with -CiVersionsFile).
+.PARAMETER CiVersionsRef      Fetch strawberry-msvc-dependencies' build.yaml automatically (ignored with -CiVersionsFile; with
+                              either, -Deps auto means pinned and the CI file's versions win).
                               'auto'   = the newest build.yaml commit that existed when the Akousma commit being built was
                                          made (GitHub API; set $env:GITHUB_TOKEN if you hit the unauthenticated rate limit),
                               'master' / a tag / a commit = that exact revision.
@@ -164,6 +186,12 @@
   .\Build-Akousma.ps1 -ForceRebuild gst-plugins-good
   # Check a command line: resolved folders, source and local patches, nothing is changed
   .\Build-Akousma.ps1 -WorkRoot E:\ -AkousmaSource E:\src\Akousma -DryRun
+  # Release 1.0.0: build it with the latest dependency versions and keep them (versions\1.0.0.txt; commit that file)
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0 -FreezeDeps 1.0.0
+  # Later: the same tag builds with the 1.0.0 versions again; master keeps following the latest versions
+  .\Build-Akousma.ps1 -AkousmaRef v1.0.0
+  # The versions a run would use (and what differs from StrawberryPackageVersions.txt), nothing is built
+  .\Build-Akousma.ps1 -Deps latest -DryRun
   # 32-bit (x86) build, in its own folders (build_x86_release, akousma_msvc_x86_release)
   .\Build-Akousma.ps1 -Arch x86
   # x64 and x86, one after the other
@@ -216,6 +244,9 @@ param(
   [hashtable]$VersionOverrides = @{},
   [Alias('git_refs')]
   [hashtable]$GitRefs       = @{},
+  [string]$Deps             = "",   # auto (default; build-settings.json), latest, pinned or a release lock (versions\<release>.txt)
+  [string]$FreezeDeps       = "",
+  [string]$DepsUpstream     = "",
   [Alias('versions_file')]
   [string]$VersionsFile     = "",
   [Alias('ci_versions_file')]
@@ -263,6 +294,8 @@ param(
   # processes of the parallel build (-child_build).
   [Parameter(DontShow)]
   [switch]$arch_build,
+  [Parameter(DontShow)]
+  [hashtable]$deps_resolved = @{},
   [Parameter(DontShow)]
   [string]$jom_path         = "",
   [Parameter(DontShow)]
@@ -337,6 +370,7 @@ $SettingsDefaults = [ordered]@{
   AkousmaRepo    = 'https://github.com/Genki-jp0/Akousma.git'
   AkousmaRef     = 'master'
   AkousmaSource  = ''
+  Deps           = 'auto'
   WorkRoot       = 'C:\Atelier'
   ProjectRoot    = '{WorkRoot}\data\projects\akousma'
   MsvcRoot       = '{ProjectRoot}\msvc_'
@@ -354,7 +388,7 @@ $SettingsDefaults = [ordered]@{
   LogDir         = '{BuildPath}\logs'
   GitBinPath     = ''
 }
-$SettingsPathKeys = @($SettingsDefaults.Keys | Where-Object { $_ -notin 'Arch', 'BuildType', 'AkousmaRepo', 'AkousmaRef' })
+$SettingsPathKeys = @($SettingsDefaults.Keys | Where-Object { $_ -notin 'Arch', 'BuildType', 'AkousmaRepo', 'AkousmaRef', 'Deps' })
 $SettingsApplied = [ordered]@{}   # the values taken from the file, passed on to the per-architecture processes
 if (-not $arch_build) {
   $settings = [ordered]@{}
@@ -416,6 +450,419 @@ if (-not $arch_build) {
   }
   Write-Host "Build settings: $SettingsPath ($settingsNote)" -ForegroundColor Cyan
 }
+# ---------------------------------------------------------------------
+# Dependency versions (-Deps): StrawberryPackageVersions.txt as committed here (pinned), the newest set upstream's CI has
+# built (latest), or the lock of an Akousma release (versions\<release>.txt). Resolved once, here, before the architectures
+# are started: every architecture (and the x64 build an arm64 cross-compile runs) gets the same versions, even when upstream
+# moves while the first one builds. The build part reads the result as its versions file (<BuildPath>\deps-versions.txt).
+# ---------------------------------------------------------------------
+$MsvcToolsBase = "d7e0c51d74d31abe94efe162ad246e36c8e10705"   # upstream 2026-10-30 'Update glib_networking'
+$UpstreamToolsRepo = 'https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools'
+# sha256 (LF line endings) of upstream's StrawberryMSVCBuild.ps1 at $MsvcToolsBase. -Deps latest compares upstream's current
+# one with it: a difference means upstream changed recipes since, which the latest versions may need.
+$UpstreamBaseScriptSha256 = 'c92ace90ec3904e6b58b22118fa4e47dcc8abcab22400a8ba45e33a9b9364700'
+$DepsLockDir = Join-Path $PSScriptRoot 'versions'
+# Dependencies built from a git clone's default branch (the URLs of GetGitRepoUrls below). -FreezeDeps records their commits
+# in the lock, and a build from the lock checks those out. (ffmpeg is not here: its branch follows FFMPEG_VERSION.)
+$DepsGitRepos = [ordered]@{
+  'yasm'           = 'https://github.com/yasm/yasm'
+  'libffi'         = 'https://gitlab.freedesktop.org/gstreamer/meson-ports/libffi'
+  'gst-plugins-rs' = 'https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs'
+  'qtsparkle'      = 'https://github.com/strawberrymusicplayer/qtsparkle'
+  'pe-util'        = 'https://github.com/gsauthof/pe-util'
+}
+# Patch names whose package is not named like its version (QT_VERSION builds qtbase, ...). Other patches go by their name:
+# libopenmpt-cmake.patch -> LIBOPENMPT_VERSION.
+$DepsPatchKeys = @{
+  'qtbase' = 'QT_VERSION'; 'qttools' = 'QT_VERSION'; 'qtimageformats' = 'QT_VERSION'; 'qtsvg' = 'QT_VERSION'
+  'fftw' = 'FFTW_SOURCE_VERSION'; 'fftw3' = 'FFTW_SOURCE_VERSION'; 'ogg' = 'LIBOGG_VERSION'; 'vorbis' = 'LIBVORBIS_VERSION'
+  'dlfcn-win32' = 'DLFCN_VERSION'; 'pe-parse' = 'PEPARSE_VERSION'; 'gstreamer' = 'GSTREAMER_VERSION'
+  'gst-plugins-base' = 'GSTREAMER_VERSION'; 'gst-plugins-good' = 'GSTREAMER_VERSION'; 'gst-plugins-bad' = 'GSTREAMER_VERSION'
+  'gst-plugins-ugly' = 'GSTREAMER_VERSION'; 'gst-libav' = 'GSTREAMER_VERSION'
+}
+
+function Get-DepsTextSha256([string]$text) {
+  $bytes = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($text.Replace("`r`n", "`n")))
+  return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
+function Read-DepsVersions([string]$text) {
+  # A versions file: PACKAGE_NAME=version lines (StrawberryPackageVersions.txt), and in a lock "# key: value" lines.
+  $r = @{ Versions = [ordered]@{}; Meta = [ordered]@{}; GitRefs = [ordered]@{}; Patches = [ordered]@{} }
+  foreach ($raw in ($text -split "`r?`n")) {
+    $line = $raw.Trim()
+    if ($line -cmatch '^#\s*git-ref:\s*(\S+)\s+([0-9a-f]{40})$') { $r.GitRefs[$Matches[1]] = $Matches[2]; continue }
+    if ($line -cmatch '^#\s*patch:\s*(\S+)\s+([0-9a-f]{64})$') { $r.Patches[$Matches[1]] = $Matches[2]; continue }
+    if ($line -cmatch '^#\s*([a-z][a-z-]*):\s*(.*)$') { $r.Meta[$Matches[1]] = $Matches[2].Trim(); continue }
+    if (-not $line -or $line.StartsWith('#')) { continue }
+    if ($line -match '^([^=]+)=(.*)$' -and $Matches[2].Trim()) { $r.Versions[$Matches[1].Trim().ToUpperInvariant()] = $Matches[2].Trim() }
+  }
+  return $r
+}
+function Compare-DepsVersion([string]$a, [string]$b) {
+  # -1 / 0 / 1 for two dotted versions (each part compared as a number); $null when one is not a version (a git commit).
+  if ($a -notmatch '^\d+(\.\d+)*$' -or $b -notmatch '^\d+(\.\d+)*$') { return $null }
+  $x = $a.Split('.'); $y = $b.Split('.')
+  for ($i = 0; $i -lt [Math]::Max($x.Count, $y.Count); $i++) {
+    $p = if ($i -lt $x.Count) { [bigint]::Parse($x[$i]) } else { [bigint]::Zero }
+    $q = if ($i -lt $y.Count) { [bigint]::Parse($y[$i]) } else { [bigint]::Zero }
+    if ($p -ne $q) { return $(if ($p -lt $q) { -1 } else { 1 }) }
+  }
+  return 0
+}
+function Get-DepsPatchKey([string]$name, [string[]]$keys) {
+  # The version a patch goes with, by its package name (the longest match): opusfile-cmake.patch -> OPUSFILE_VERSION.
+  $base = ([System.IO.Path]::GetFileNameWithoutExtension($name)).ToLowerInvariant() -replace '^\d+[-_.]', ''
+  $best = $null; $bestLength = -1
+  $candidates = @($DepsPatchKeys.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Name = $_.Key; Key = $_.Value } }) +
+                @($keys | Where-Object { $_ -like '*_VERSION' } | ForEach-Object { [pscustomobject]@{ Name = ($_ -replace '_VERSION$', '').ToLowerInvariant().Replace('_', '-'); Key = $_ } })
+  foreach ($c in $candidates) {
+    if (($base -eq $c.Name -or $base.StartsWith("$($c.Name)-")) -and $c.Name.Length -gt $bestLength) { $best = $c.Key; $bestLength = $c.Name.Length }
+  }
+  return $best
+}
+function Get-DepsPatchFiles([string[]]$keys) {
+  # The build tools' patches\*.patch and the local patches (local-patches\, -GstGoodPatch), with the version each goes with.
+  $list = [System.Collections.Generic.List[object]]::new()
+  $toolDir = Join-Path $PSScriptRoot 'patches'
+  if (Test-Path -LiteralPath $toolDir -PathType Container) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $toolDir -File -Filter '*.patch' | Sort-Object Name)) {
+      $list.Add([pscustomobject]@{ Name = "patches/$($f.Name)"; Path = $f.FullName; Key = (Get-DepsPatchKey $f.Name $keys); Tool = $true })
+    }
+  }
+  $localDir = Join-Path $PSScriptRoot 'local-patches'
+  if (-not $NoAutoPatches -and (Test-Path -LiteralPath $localDir -PathType Container)) {
+    $isPatch = { $_.Extension -ieq '.patch' -or $_.Extension -ieq '.diff' }
+    $files = @(Get-ChildItem -LiteralPath $localDir -File | Where-Object $isPatch) +
+             @(Get-ChildItem -LiteralPath $localDir -Directory | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -File | Where-Object $isPatch })
+    foreach ($f in @($files | Sort-Object FullName)) {
+      $rel = [System.IO.Path]::GetRelativePath($PSScriptRoot, $f.FullName).Replace('\', '/')
+      $owner = if ($f.Directory.FullName.TrimEnd('\', '/') -ne $localDir.TrimEnd('\', '/')) { "$($f.Directory.Name)-x" } else { $f.Name }
+      $list.Add([pscustomobject]@{ Name = $rel; Path = $f.FullName; Key = (Get-DepsPatchKey $owner $keys); Tool = $false })
+    }
+  }
+  if ($GstGoodPatch) {
+    $p = Resolve-UserPath $GstGoodPatch
+    $list.Add([pscustomobject]@{ Name = $p; Path = $p; Key = 'GSTREAMER_VERSION'; Tool = $false })
+  }
+  return @($list)
+}
+function Get-DepsFileText([string]$path) {
+  return [System.IO.File]::ReadAllText($path)
+}
+function ConvertTo-DepsLockName([string]$ref) {
+  # v1.0.0 / refs/tags/v1.0.0 / 1.0.0 -> 1.0.0
+  $n = $ref.Trim() -replace '^refs/tags/', ''
+  if ($n -match '^[vV](\d.*)$') { $n = $Matches[1] }
+  return $n
+}
+function Get-DepsLocks {
+  if (-not (Test-Path -LiteralPath $DepsLockDir -PathType Container)) { return @() }
+  return @(Get-ChildItem -LiteralPath $DepsLockDir -File -Filter '*.txt' | Sort-Object Name | ForEach-Object {
+    [pscustomobject]@{ Name = $_.BaseName; Path = $_.FullName; Data = (Read-DepsVersions (Get-DepsFileText $_.FullName)) }
+  })
+}
+function Invoke-DepsGit {
+  # git's output lines, or @() when it fails (no network, not a repository, no git): these lookups are optional.
+  if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return @() }
+  $prompt = $env:GIT_TERMINAL_PROMPT
+  $env:GIT_TERMINAL_PROMPT = '0'   # a repository that needs a login fails instead of waiting for one
+  try { $out = & git @args 2>$null; $ok = $LASTEXITCODE -eq 0 }
+  finally { $env:GIT_TERMINAL_PROMPT = $prompt }
+  $global:LASTEXITCODE = 0
+  if (-not $ok) { return @() }
+  return @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+}
+function Get-DepsRemoteCommit([string]$url, [string]$ref) {
+  # The commit of a tag (peeled), branch or other ref name in a remote repository; '' when it isn't there.
+  [string[]]$patterns = if ($ref -eq 'HEAD') { 'HEAD' } else { @("refs/tags/$ref^{}", "refs/tags/$ref", "refs/heads/$ref") }
+  $lines = @(Invoke-DepsGit ls-remote $url @patterns)
+  foreach ($suffix in @("refs/tags/$ref^{}", "refs/tags/$ref", "refs/heads/$ref", 'HEAD')) {
+    $hit = $lines | Where-Object { ($_ -split '\s+')[1] -eq $suffix } | Select-Object -First 1
+    if ($hit) { return ($hit -split '\s+')[0] }
+  }
+  return ''
+}
+function Find-DepsLock($locks) {
+  # The release lock for the Akousma source being built: a tag or commit with versions\<tag>.txt, or the commit a lock records.
+  if (-not $locks -or @($locks).Count -eq 0) { return $null }
+  $byName = { param($n) $locks | Where-Object { $_.Name -ieq (ConvertTo-DepsLockName $n) } | Select-Object -First 1 }
+  $byCommit = { param($c) if ($c -match '^[0-9a-f]{7,40}$') { $locks | Where-Object { $_.Data.Meta['akousma-commit'] -and $_.Data.Meta['akousma-commit'].StartsWith($c.ToLowerInvariant()) } | Select-Object -First 1 } }
+  if ($AkousmaSource) {
+    $src = Resolve-UserPath $AkousmaSource
+    foreach ($tag in @(Invoke-DepsGit -C $src tag --points-at HEAD)) { $l = & $byName $tag; if ($l) { return @{ Lock = $l; Why = "the local checkout is at tag $tag" } } }
+    $head = @(Invoke-DepsGit -C $src rev-parse HEAD) | Select-Object -First 1
+    if ($head) { $l = & $byCommit $head; if ($l) { return @{ Lock = $l; Why = "the local checkout is at $($head.Substring(0, 7)), the commit of release $($l.Name)" } } }
+    return $null
+  }
+  $ref = if ($AkousmaRef) { $AkousmaRef } else { 'master' }
+  $l = & $byName $ref
+  if ($l) { return @{ Lock = $l; Why = "Akousma @ $ref is release $($l.Name)" } }
+  $l = & $byCommit $ref
+  if ($l) { return @{ Lock = $l; Why = "Akousma @ $ref is the commit of release $($l.Name)" } }
+  # Another tag on a release commit (e.g. 1.0.0-final): only asked when a lock records a commit, so a plain build asks nothing.
+  if (@($locks | Where-Object { $_.Data.Meta['akousma-commit'] }).Count -and $ref -notmatch '^[0-9a-f]{7,40}$') {
+    $tagLines = @(Invoke-DepsGit ls-remote --tags $AkousmaRepo "refs/tags/$ref" "refs/tags/$ref^{}")
+    $peeled = $tagLines | Where-Object { $_ -like "*refs/tags/$ref^{}" } | Select-Object -First 1
+    $commit = if ($peeled) { ($peeled -split '\s+')[0] } elseif ($tagLines) { ($tagLines[0] -split '\s+')[0] } else { '' }
+    if ($commit) { $l = & $byCommit $commit; if ($l) { return @{ Lock = $l; Why = "tag $ref is $($commit.Substring(0, 7)), the commit of release $($l.Name)" } } }
+  }
+  return $null
+}
+function Get-DepsUpstream {
+  # Where -Deps latest reads upstream's files: a branch, tag or commit of upstream strawberry-msvc-build-tools (default master,
+  # resolved to its commit, so the versions and the patches compared with them are one snapshot), a URL or a folder.
+  $u = if ($DepsUpstream) { $DepsUpstream.Trim() } else { 'master' }
+  if ($u -match '^https?://') { return @{ Base = $u.TrimEnd('/'); Label = $u; Commit = ''; Folder = $false } }
+  $folder = Resolve-UserPath $u
+  if (Test-Path -LiteralPath $folder -PathType Container) { return @{ Base = $folder; Label = $folder; Commit = ''; Folder = $true } }
+  if ($u.Contains('\') -or $u.StartsWith('.') -or [System.IO.Path]::IsPathRooted($u)) { throw "-DepsUpstream: folder not found: $u" }
+  if ($u -notmatch '^[0-9A-Za-z][0-9A-Za-z._/-]*$') { throw "-DepsUpstream '$u': pass a branch, tag or commit of strawberry-msvc-build-tools, a URL or a folder." }
+  $commit = if ($u -match '^[0-9a-f]{40}$') { $u } else { Get-DepsRemoteCommit "$UpstreamToolsRepo.git" $u }
+  if (-not $commit -and $u -match '^[0-9a-f]{7,39}$') { throw "-DepsUpstream ${u}: pass the full 40-character commit." }
+  $at = if ($commit) { $commit } else { $u }   # ls-remote failed: the branch name, as raw.githubusercontent.com takes it
+  return @{ Base = "https://raw.githubusercontent.com/strawberrymusicplayer/strawberry-msvc-build-tools/$at"; Folder = $false; Commit = $commit
+            Label = "upstream strawberry-msvc-build-tools $u" + $(if ($commit -and $commit -ne $u) { " @ $($commit.Substring(0, 7))" } elseif (-not $commit) { ' (commit not resolved)' }) }
+}
+function Get-DepsUpstreamFile($upstream, [string]$rel) {
+  # The file's text; $null when upstream does not have it (HTTP 404 / no such file). Other failures throw.
+  if ($upstream.Folder) {
+    $p = Join-Path $upstream.Base $rel
+    if (Test-Path -LiteralPath $p -PathType Leaf) { return (Get-DepsFileText $p) } else { return $null }
+  }
+  try {
+    $content = (Invoke-WebRequest -Uri "$($upstream.Base)/$rel" -UseBasicParsing -TimeoutSec 60 -Headers @{ 'User-Agent' = 'Build-Akousma.ps1' }).Content
+    if ($content -is [byte[]]) { $content = [System.Text.Encoding]::UTF8.GetString($content) }
+    return [string]$content
+  }
+  catch {
+    $response = $_.Exception.Response
+    if ($response -and [int]$response.StatusCode -eq 404) { return $null }
+    throw
+  }
+}
+function Resolve-DepsVersions {
+  $baseFile = if ($VersionsFile) { Resolve-UserPath $VersionsFile } else { Join-Path $PSScriptRoot 'StrawberryPackageVersions.txt' }
+  if (-not (Test-Path -LiteralPath $baseFile -PathType Leaf)) { throw "Package versions file not found: $baseFile" }
+  $baseName = if ($VersionsFile) { $baseFile } else { 'StrawberryPackageVersions.txt' }
+  $base = Read-DepsVersions (Get-DepsFileText $baseFile)
+  $keys = @($base.Versions.Keys)
+  $patches = @(Get-DepsPatchFiles $keys)
+  $requested = if ($Deps) { $Deps.Trim() } else { 'auto' }
+  $r = [ordered]@{
+    Mode = ''; Label = ''; Why = ''; BaseName = $baseName; Versions = [ordered]@{}; GitRefs = [ordered]@{}; Upstream = ''
+    Changes = [System.Collections.Generic.List[object]]::new(); Warnings = [System.Collections.Generic.List[string]]::new()
+    Notes = [System.Collections.Generic.List[string]]::new(); Patches = $patches; Lock = $null
+  }
+  $lockPatches = @{}
+  foreach ($k in $keys) { $r.Versions[$k] = $base.Versions[$k] }
+  $locks = @(Get-DepsLocks)
+  $mode = $requested
+  if ($mode -ieq 'auto') {
+    if ($CiVersionsFile -or $CiVersionsRef) { $mode = 'pinned'; $r.Why = '-CiVersionsRef / -CiVersionsFile set the versions' }
+    elseif ($VersionsFile) { $mode = 'pinned'; $r.Why = '-VersionsFile' }
+    else {
+      $found = Find-DepsLock $locks
+      if ($found) { $mode = $found.Lock.Name; $r.Why = $found.Why }
+      else {
+        $mode = 'latest'
+        $what = if ($AkousmaSource) { 'the local checkout' } else { "Akousma @ $(if ($AkousmaRef) { $AkousmaRef } else { 'master' })" }
+        $r.Why = "no release lock for $what"
+      }
+    }
+    $r.Why = "auto: $($r.Why)"
+  }
+  elseif ($mode -ieq 'pinned' -or $mode -ieq 'latest') { $mode = $mode.ToLowerInvariant(); $r.Why = "-Deps $mode" }
+  else { $r.Why = "-Deps $mode" }
+
+  if ($mode -eq 'latest') {
+    try {
+      $upstream = Get-DepsUpstream
+      $text = Get-DepsUpstreamFile $upstream 'StrawberryPackageVersions.txt'
+      if ($null -eq $text) { throw "$($upstream.Label) has no StrawberryPackageVersions.txt" }
+      $up = Read-DepsVersions $text
+      if ($up.Versions.Count -eq 0) { throw "no versions in $($upstream.Label)/StrawberryPackageVersions.txt" }
+    }
+    catch {
+      $r.Warnings.Add("-Deps latest: could not read upstream's versions ($($_.Exception.Message)). Using the pinned versions.")
+      $mode = 'pinned'
+      $r.Why += ', latest not available'
+    }
+  }
+  if ($mode -eq 'latest') {
+    $r.Upstream = $upstream.Label
+    $r.Mode = 'latest'
+    $r.Label = "latest ($($upstream.Label))"
+    $patchCache = @{}
+    foreach ($k in $keys) {
+      if ($k -like '*_YEAR' -and $base.Versions.Contains(($k -replace '_YEAR$', '_VERSION'))) { continue }   # goes with its _VERSION
+      if (-not $up.Versions.Contains($k) -or $up.Versions[$k] -eq $base.Versions[$k]) { continue }
+      $new = $up.Versions[$k]
+      if ($new -notmatch '^[0-9A-Za-z][0-9A-Za-z._+-]*$') { $r.Warnings.Add("$k stays $($base.Versions[$k]): upstream's value '$new' is not a version."); continue }
+      $order = Compare-DepsVersion $new $base.Versions[$k]
+      if ($null -ne $order -and $order -lt 0) { $r.Notes.Add("$k stays $($base.Versions[$k]): upstream has the older $new."); continue }
+      # A build tools patch for this package that upstream changed or removed with the update would not fit the new version:
+      # keep the pinned version until those patches are merged from upstream.
+      $held = @()
+      foreach ($p in @($patches | Where-Object { $_.Tool -and $_.Key -eq $k })) {
+        $rel = $p.Name
+        try {
+          if (-not $patchCache.ContainsKey($rel)) { $patchCache[$rel] = Get-DepsUpstreamFile $upstream $rel }
+          $upText = $patchCache[$rel]
+          if ($null -eq $upText) { $held += "upstream removed $rel" }
+          elseif ((Get-DepsTextSha256 $upText) -ne (Get-DepsTextSha256 (Get-DepsFileText $p.Path))) { $held += "upstream changed $rel" }
+        }
+        catch { $held += "could not compare $rel with upstream's ($($_.Exception.Message))" }
+      }
+      if ($held.Count) {
+        $r.Warnings.Add("$k stays $($base.Versions[$k]) (upstream: $new): $($held -join '; '). Merge upstream's build tools (git merge upstream/master) to build $new.")
+        continue
+      }
+      $r.Versions[$k] = $new
+      $yearKey = $k -replace '_VERSION$', '_YEAR'
+      if ($yearKey -ne $k -and $base.Versions.Contains($yearKey) -and $up.Versions.Contains($yearKey)) { $r.Versions[$yearKey] = $up.Versions[$yearKey] }
+    }
+    $extra = @($up.Versions.Keys | Where-Object { -not $base.Versions.Contains($_) })
+    if ($extra.Count) { $r.Notes.Add("Upstream has versions this script does not build yet (new packages): $($extra -join ', ').") }
+    try {
+      $upScript = Get-DepsUpstreamFile $upstream 'StrawberryMSVCBuild.ps1'
+      if ($null -ne $upScript -and (Get-DepsTextSha256 $upScript) -ne $UpstreamBaseScriptSha256) {
+        $compare = "$UpstreamToolsRepo/compare/$($MsvcToolsBase.Substring(0, 7))...$(if ($upstream.Commit) { $upstream.Commit.Substring(0, 7) } else { 'master' })"
+        $r.Warnings.Add("Upstream's StrawberryMSVCBuild.ps1 changed since $($MsvcToolsBase.Substring(0, 7)), the upstream commit these build tools are based on: " +
+                        "the latest versions may need recipe changes that are not here yet ($compare). If a package fails, use -Deps pinned.")
+      }
+    }
+    catch { $r.Notes.Add("Could not compare upstream's StrawberryMSVCBuild.ps1 with $($MsvcToolsBase.Substring(0, 7)) ($($_.Exception.Message)).") }
+  }
+  elseif ($mode -eq 'pinned') {
+    $r.Mode = 'pinned'
+    $r.Label = "pinned ($baseName)"
+    foreach ($g in $base.GitRefs.Keys) { $r.GitRefs[$g] = $base.GitRefs[$g] }   # -VersionsFile <a lock or deps-versions.txt>
+  }
+  else {
+    $name = ConvertTo-DepsLockName $mode
+    $lock = $locks | Where-Object { $_.Name -ieq $name } | Select-Object -First 1
+    if (-not $lock) {
+      $have = if ($locks.Count) { ($locks | ForEach-Object { $_.Name }) -join ', ' } else { 'none yet' }
+      throw "-Deps ${mode}: no lock $(Join-Path $DepsLockDir "$name.txt") (locks: $have). Use -Deps auto, latest, pinned or a lock name; -FreezeDeps <release> writes one."
+    }
+    $r.Mode = 'lock'
+    $r.Lock = $lock.Name
+    $lockPatches = $lock.Data.Patches
+    $r.Label = "lock $($lock.Name) (versions\$($lock.Name).txt)"
+    foreach ($k in $lock.Data.Versions.Keys) { $r.Versions[$k] = $lock.Data.Versions[$k] }
+    $missing = @($keys | Where-Object { -not $lock.Data.Versions.Contains($_) })
+    if ($missing.Count) { $r.Warnings.Add("versions\$($lock.Name).txt has no $($missing -join ', '): using the pinned versions for those (added to the build tools after the lock was frozen).") }
+    foreach ($g in $lock.Data.GitRefs.Keys) { $r.GitRefs[$g] = $lock.Data.GitRefs[$g] }
+    $frozenWith = $lock.Data.Meta['build-tools-commit']
+    if ($frozenWith -and $frozenWith -match '^[0-9a-f]{40}$') {
+      $headNow = @(Invoke-DepsGit -C $PSScriptRoot rev-parse HEAD) | Select-Object -First 1
+      if ($headNow -and $headNow -ne $frozenWith) {
+        $changedPatches = @(foreach ($p in $patches) {
+          $was = $lock.Data.Patches[$p.Name]
+          if (-not $was) { "$($p.Name) (new)" } elseif ($was -ne (Get-DepsTextSha256 (Get-DepsFileText $p.Path))) { "$($p.Name) (changed)" }
+        }) + @($lock.Data.Patches.Keys | Where-Object { $_ -notin @($patches | ForEach-Object { $_.Name }) } | ForEach-Object { "$_ (removed)" })
+        $note = "The lock was frozen with build tools $($frozenWith.Substring(0, 7)); these are $($headNow.Substring(0, 7))."
+        if ($lock.Data.Patches.Count -and $changedPatches.Count) {
+          $r.Warnings.Add("$note Patches changed since: $($changedPatches -join ', '). For the release's exact build: git -C `"$PSScriptRoot`" checkout $($frozenWith.Substring(0, 7)) (or a worktree of it) and build from there.")
+        }
+        else { $r.Notes.Add("$note For the release's exact build tools: git checkout $($frozenWith.Substring(0, 7)).") }
+      }
+    }
+  }
+
+  foreach ($k in $VersionOverrides.Keys) {
+    $key = ([string]$k).ToUpperInvariant()
+    if (-not $key.EndsWith('_VERSION')) { $key = "${key}_VERSION" }
+    $r.Versions[$key] = [string]$VersionOverrides[$k]
+  }
+  foreach ($k in $r.Versions.Keys) {
+    $old = if ($base.Versions.Contains($k)) { $base.Versions[$k] } else { '(none)' }
+    if ($old -ne $r.Versions[$k]) { $r.Changes.Add([pscustomobject]@{ Key = $k; Old = $old; New = $r.Versions[$k] }) }
+  }
+  # Patches of a package whose version changes were written for the pinned version (as were the local ones, presumably).
+  foreach ($c in $r.Changes) {
+    foreach ($p in @($patches | Where-Object { $_.Key -eq $c.Key })) {
+      if ($p.Tool -and $r.Mode -eq 'latest') { continue }   # compared with upstream's above: upstream builds $c.New with it
+      if ($lockPatches[$p.Name] -eq (Get-DepsTextSha256 (Get-DepsFileText $p.Path))) { continue }   # the same patch as when the lock was frozen
+      $r.Warnings.Add("$($p.Name) is applied to $($c.Key -replace '_VERSION$', '') $($c.New) but was written for $($c.Old): if it no longer applies, update it (or build -Deps pinned).")
+    }
+  }
+  return $r
+}
+function Write-DepsSummary($r) {
+  Write-Host "Dependency versions: $($r.Label)  [$($r.Why)]" -ForegroundColor Cyan
+  if ($r.Changes.Count) {
+    Write-Host "  $($r.Changes.Count) of $($r.Versions.Count) differ from the pinned ones ($($r.BaseName)):" -ForegroundColor Cyan
+    foreach ($c in $r.Changes) { Write-Host ("    {0,-28} {1} -> {2}" -f $c.Key, $c.Old, $c.New) -ForegroundColor Cyan }
+  }
+  else { Write-Host "  all $($r.Versions.Count) are the pinned ones ($($r.BaseName))" -ForegroundColor Cyan }
+  foreach ($g in $r.GitRefs.Keys) { Write-Host ("    {0,-28} git {1}" -f $g, $r.GitRefs[$g]) -ForegroundColor Cyan }
+  foreach ($n in $r.Notes) { Write-Host "  $n" -ForegroundColor DarkCyan }
+  foreach ($w in $r.Warnings) { Write-Warning $w }
+}
+function Format-DepsFile([string[]]$header, [string[]]$versionLines, $gitRefs) {
+  # A versions file the build part reads (PACKAGE_NAME=version, as StrawberryPackageVersions.txt); "# key: value" lines too.
+  $lines = [System.Collections.Generic.List[string]]::new()
+  foreach ($h in $header) { $lines.Add("# $h") }
+  foreach ($g in @($gitRefs.Keys | Sort-Object)) { $lines.Add("# git-ref: $g $($gitRefs[$g])") }
+  $lines.Add('')
+  foreach ($l in $versionLines) { $lines.Add($l) }
+  return (($lines -join "`n") + "`n")
+}
+function Get-DepsLines($versions) { return [string[]]@($versions.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) }
+function Save-DepsLock($r, [string]$release) {
+  $name = ConvertTo-DepsLockName $release
+  if ($name -notmatch '^[0-9A-Za-z][0-9A-Za-z._+-]*$') { throw "-FreezeDeps '$release': use the Akousma release, e.g. -FreezeDeps 1.0.0." }
+  if ($CiVersionsFile -or $CiVersionsRef) { throw "-FreezeDeps can't be combined with -CiVersionsRef / -CiVersionsFile: their versions are read later, by the build, and would not be in the lock." }
+  $path = Join-Path $DepsLockDir "$name.txt"
+  # The git-sourced dependencies: their current commits, which this build uses too, so the lock holds what is built now.
+  foreach ($repo in $DepsGitRepos.Keys) {
+    if ($GitRefs.ContainsKey($repo)) { if ($GitRefs[$repo] -match '^[0-9a-f]{40}$') { $r.GitRefs[$repo] = $GitRefs[$repo] }; continue }
+    if ($r.GitRefs.Contains($repo)) { continue }
+    $sha = Get-DepsRemoteCommit $DepsGitRepos[$repo] 'HEAD'
+    if ($sha) { $r.GitRefs[$repo] = $sha } else { Write-Warning "-FreezeDeps: could not get the commit of $repo ($($DepsGitRepos[$repo])); the lock does not pin it." }
+  }
+  $akousmaCommit = if ($AkousmaSource) { @(Invoke-DepsGit -C (Resolve-UserPath $AkousmaSource) rev-parse HEAD) | Select-Object -First 1 }
+                   elseif ($AkousmaRef -match '^[0-9a-f]{40}$') { $AkousmaRef }
+                   else { Get-DepsRemoteCommit $AkousmaRepo $(if ($AkousmaRef) { $AkousmaRef } else { 'master' }) }
+  $toolsCommit = @(Invoke-DepsGit -C $PSScriptRoot rev-parse HEAD) | Select-Object -First 1
+  $header = @(
+    "Dependency versions of Akousma $name, written by Build-Akousma.ps1 -FreezeDeps $name. Commit this file.",
+    "Used when Akousma $name is built (tag $name or v$name, or the commit below), or with -Deps $name.",
+    "Format: PACKAGE_NAME=version, like StrawberryPackageVersions.txt; the '# name: value' lines are read too.",
+    "frozen: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))",
+    "akousma-ref: $(if ($AkousmaSource) { "local checkout $(Resolve-UserPath $AkousmaSource)" } else { "$AkousmaRepo @ $(if ($AkousmaRef) { $AkousmaRef } else { 'master' })" })"
+  )
+  if ($akousmaCommit) { $header += "akousma-commit: $akousmaCommit" } else { Write-Warning "-FreezeDeps: could not get the Akousma commit; the lock is found by its name ($name / v$name) only." }
+  if ($toolsCommit) { $header += "build-tools-commit: $toolsCommit" }
+  $header += "resolved-from: $($r.Label)"
+  foreach ($p in $r.Patches) { if ($p.Name -notmatch '^[\\/]|^[A-Za-z]:') { $header += "patch: $($p.Name) $(Get-DepsTextSha256 (Get-DepsFileText $p.Path))" } }
+  $text = Format-DepsFile $header (Get-DepsLines $r.Versions) $r.GitRefs
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    $old = Read-DepsVersions (Get-DepsFileText $path)
+    $refLines = { param($refs) (@($refs.Keys | Sort-Object | ForEach-Object { "$_=$($refs[$_])" }) -join "`n") }
+    $same = ((Get-DepsLines $old.Versions) -join "`n") -eq ((Get-DepsLines $r.Versions) -join "`n") -and (& $refLines $old.GitRefs) -eq (& $refLines $r.GitRefs)
+    if ($same) { Write-Host "-FreezeDeps ${name}: $path already holds these versions; not written." -ForegroundColor Cyan; return }
+    throw "-FreezeDeps ${name}: $path exists with other versions. A release's lock is not replaced: delete it first to freeze $name again."
+  }
+  New-Item -ItemType Directory -Force -Path $DepsLockDir | Out-Null
+  [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+  Write-Host "-FreezeDeps ${name}: wrote $path ($($r.Versions.Count) versions, $($r.GitRefs.Count) git commits). Commit it; builds of Akousma $name use it from now on." -ForegroundColor Green
+}
+if ($deps_resolved.Count) {
+  # An architecture of a multi-architecture run: the run that started it resolved the versions.
+  $DepsResolved = $deps_resolved
+  Write-Host "Dependency versions: $($DepsResolved.Label) (as resolved for all architectures)" -ForegroundColor Cyan
+}
+else {
+  $resolved = Resolve-DepsVersions
+  if ($FreezeDeps) { Save-DepsLock $resolved $FreezeDeps }
+  Write-DepsSummary $resolved
+  $depsGitRefs = @{}
+  foreach ($g in $resolved.GitRefs.Keys) { $depsGitRefs[$g] = $resolved.GitRefs[$g] }
+  $DepsResolved = @{ Label = $resolved.Label; Mode = $resolved.Mode; Why = $resolved.Why; GitRefs = $depsGitRefs; Lines = (Get-DepsLines $resolved.Versions) }
+}
+
 $ArchList = ConvertTo-ArchList $Arch
 if ($ArchList.Count -gt 1) {
   # Several architectures: one fresh pwsh per architecture, one after the other. Each starts from this window's environment,
@@ -429,15 +876,16 @@ if ($ArchList.Count -gt 1) {
                   'OldPrefixPath', 'GitBinPath', 'HostPrefixPath')
   $forward = [ordered]@{}
   foreach ($k in @($PSBoundParameters.Keys)) {
-    if ($k -in 'Arch', 'SaveSettings') { continue }
+    if ($k -in 'Arch', 'SaveSettings', 'Deps', 'FreezeDeps', 'DepsUpstream') { continue }   # the versions are resolved above
     $v = $PSBoundParameters[$k]
     if ($v -is [System.Management.Automation.SwitchParameter]) { $v = $v.IsPresent }
     elseif ($k -in $pathParams) { $v = Resolve-UserPath $v }
     $forward[$k] = $v
   }
   # The values from build-settings.json too: each architecture's process uses them as passed and never opens the file.
-  foreach ($k in $SettingsApplied.Keys) { if ($k -ne 'Arch') { $forward[$k] = $SettingsApplied[$k] } }
+  foreach ($k in $SettingsApplied.Keys) { if ($k -notin 'Arch', 'Deps') { $forward[$k] = $SettingsApplied[$k] } }
   $forward['arch_build'] = $true
+  $forward['deps_resolved'] = $DepsResolved
   $scriptLiteral = $PSCommandPath.Replace("'", "''")
   $results = [ordered]@{}
   $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -607,10 +1055,10 @@ foreach ($name in 'VersionsFile', 'CiVersionsFile', 'WorkRoot', 'ProjectRoot', '
 }
 
 # ---------------------------------------------------------------------
-# The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ d7e0c51 with the Akousma changes.
+# The build tools are the folder this script is in: upstream strawberry-msvc-build-tools @ $MsvcToolsBase (see "Dependency
+# versions" above) with the Akousma changes.
 # GlibNetworkingRef: the glib-networking commit for a versions file that doesn't pin one (see below).
 # ---------------------------------------------------------------------
-$MsvcToolsBase     = "d7e0c51d74d31abe94efe162ad246e36c8e10705"   # upstream 2026-10-30 'Update glib_networking'
 $GlibNetworkingRef = "2616c9ea3392c908a4f46826c319f8fddc2ee2a1"   # "openssl: consult errno on syscall failure"; patch from a824b0f (2026-09-25)
 $MsvcToolsRef = $MsvcToolsBase.Substring(0, 7)
 $GitRefs = $GitRefs.Clone()   # pins are added below; don't change the caller's hashtable
@@ -772,6 +1220,7 @@ if ($DryRun) {
   Write-Host ("  {0,-14} {1}" -f 'Akousma build', "$BuildPath\akousma\build\akousma.exe")
   Write-Host ("  {0,-14} {1}" -f 'Installer', "$BuildPath\AkousmaSetup\AkousmaSetup-<version>-msvc-$(@{ x86_64 = 'x64'; x86 = 'x86'; arm64 = 'arm64' }[$Arch]).exe")
   Write-Host ("  {0,-14} {1}" -f 'Build tools', "$PSScriptRoot (strawberry-msvc-build-tools $MsvcToolsRef + Akousma changes)")
+  Write-Host ("  {0,-14} {1}" -f 'Deps', "$($DepsResolved.Label) -> $BuildPath\deps-versions.txt")
   if ($CrossBuild) { Write-Host ("  {0,-14} {1}" -f 'Cross-compile', "arm64 on an x64 PC; x64 programs from $HostPrefixPath") }
   if ($prefixRenameNote) { Write-Warning $prefixRenameNote }
   return
@@ -883,6 +1332,17 @@ if ($RemoveOldCDrive) {
 # 6. Build
 # ---------------------------------------------------------------------
 if ($SkipBuild) { Write-Step "Done (build skipped)."; return }
+
+# ---------------------------------------------------------------------
+# Dependency versions: the set resolved at the start (-Deps), as this build's versions file. It stays in the build tree as the
+# record of what was built (-Deps pinned -VersionsFile <it> builds that again; -FreezeDeps with it makes it a release lock).
+# ---------------------------------------------------------------------
+$DepsFile = Join-Path $BuildPath 'deps-versions.txt'
+$depsHeader = @("Dependency versions of this build: $($DepsResolved.Label), $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')).",
+                "Written by Build-Akousma.ps1 on every run (-Deps; see versions\ for the release locks) and read by its build part.")
+[System.IO.File]::WriteAllText($DepsFile, (Format-DepsFile $depsHeader @($DepsResolved.Lines) $DepsResolved.GitRefs), [System.Text.UTF8Encoding]::new($false))
+$VersionsFile = $DepsFile
+foreach ($g in @($DepsResolved.GitRefs.Keys)) { if (-not $GitRefs.ContainsKey($g)) { $GitRefs[$g] = [string]$DepsResolved.GitRefs[$g] } }
 
 # ---------------------------------------------------------------------
 # CI versions: fetch strawberry-msvc-dependencies' build.yaml (-CiVersionsRef)
@@ -5115,7 +5575,10 @@ function Get-SmbRecipes {
       }
     }
     $tool_patches = @([regex]::Matches($text, '\$patch_path[/\\]([\w.+-]+\.patch)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-    $recipes[$name] = @{ Text = $text; Downloads = @($downloads); GitRepos = @($repos); ToolPatches = $tool_patches; UsesCMakeOrMeson = $uses_cmake_or_meson }
+    # A git-sourced recipe that uses a version (ffmpeg: git checkout meson-$ffmpeg_version) builds what that version says, not
+    # the clone's commit: the version is a source of its own. (A download's version is in its URL already.)
+    $version_vars = if ($repos.Count) { @([regex]::Matches($text, '\$([a-z0-9_]+_version)\b') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique) } else { @() }
+    $recipes[$name] = @{ Text = $text; Downloads = @($downloads); GitRepos = @($repos); VersionVars = $version_vars; ToolPatches = $tool_patches; UsesCMakeOrMeson = $uses_cmake_or_meson }
   }
   $script:smb_recipes = $recipes
   return $recipes
@@ -5161,6 +5624,7 @@ function Get-PackageFingerprint {
   if ($recipe) {
     foreach ($d in $recipe.Downloads) { $sources[$d] = if ($package_urls.ContainsKey($d)) { [string]$package_urls[$d] } else { "unknown" } }
     foreach ($r in $recipe.GitRepos) { $sources["git:$r"] = Resolve-GitSourceId -repo $r -sync:$sync }
+    foreach ($v in $recipe.VersionVars) { $sources["version:$v"] = [string](Get-Variable -Name $v -ValueOnly -ErrorAction SilentlyContinue) }
     foreach ($p in $recipe.ToolPatches) { $tool_patches[$p] = Get-NormalizedFileSha256 (Join-Path $patch_path $p) }
   }
   $local_patches = @(foreach ($p in @(Get-LocalPatches $name)) { [ordered]@{ name = (Split-Path $p -Leaf); sha256 = (Get-NormalizedFileSha256 $p) } })
@@ -5228,14 +5692,14 @@ function Get-FingerprintChanges($stamp, $fp) {
   $old_sources = if ($old['sources']) { $old['sources'] } else { @{} }
   $new_sources = $new['sources']
   foreach ($k in $new_sources.Keys) {
-    $label = $k -replace '^git:', ''
+    $label = $k -replace '^(git|version):', ''
     if (-not $old_sources.Contains($k)) { $reasons.Add("new source $label") }
     elseif ([string]$old_sources[$k] -ne [string]$new_sources[$k]) {
       $what = if ($k.StartsWith("git:")) { "commit" } else { "version" }
       $reasons.Add("$label $what changed $(Get-ShortSourceId $k $old_sources[$k]) -> $(Get-ShortSourceId $k $new_sources[$k])")
     }
   }
-  foreach ($k in $old_sources.Keys) { if (-not $new_sources.Contains($k)) { $reasons.Add("source $($k -replace '^git:', '') no longer used") } }
+  foreach ($k in $old_sources.Keys) { if (-not $new_sources.Contains($k)) { $reasons.Add("source $($k -replace '^(git|version):', '') no longer used") } }
   $old_tools = if ($old['tool_patches']) { $old['tool_patches'] } else { @{} }
   $new_tools = $new['tool_patches']
   foreach ($k in $new_tools.Keys) {

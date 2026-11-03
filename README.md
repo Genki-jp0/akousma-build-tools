@@ -15,8 +15,9 @@ Licensed under the GPL version 3 (see `COPYING`).
 * `local-patches/`: your patches for dependencies (`qtbase-*.patch` -> qtbase, `gstreamer-*.patch` -> gst-plugins-good,
   ...), applied automatically. Akousma's own changes are commits in the Akousma repository, not patches.
 * `patches/`: the dependency patches from upstream (plus `libcdio-cmake.patch`), applied by the script.
-* `StrawberryPackageVersions.txt`: the dependency versions (upstream's file, name kept). `CopyDLLDependencies.ps1`:
-  collects the DLLs for the installer.
+* `StrawberryPackageVersions.txt`: the pinned dependency versions (upstream's file, name kept). `versions/`: the
+  dependency versions of each Akousma release (`-FreezeDeps`). `CopyDLLDependencies.ps1`: collects the DLLs for the
+  installer.
 
 ## Requirements
 
@@ -56,6 +57,18 @@ In PowerShell 7 (pwsh), from anywhere:
 .\Build-Akousma.ps1 -BuildType debug                # debug build
 .\Build-Akousma.ps1 -List                           # what would be rebuilt and why; builds nothing
 .\Build-Akousma.ps1 -WorkRoot E:\ -DryRun           # the resolved folders, source and patches; builds nothing
+```
+
+Dependency versions (`-Deps`, see "Dependency versions" in BUILD.txt): a build of a release tag uses that release's
+lock, `versions/<release>.txt`; any other build (master, a branch, a local checkout) uses the latest versions
+upstream's CI has built (strawberry-msvc-build-tools master), falling back to the pinned `StrawberryPackageVersions.txt`
+per package when a patch would not fit, or entirely without network. Each run prints what differs from the pinned
+versions.
+
+```powershell
+.\Build-Akousma.ps1 -AkousmaRef v1.0.0 -FreezeDeps 1.0.0   # release: build, keep its versions (commit versions/1.0.0.txt)
+.\Build-Akousma.ps1 -AkousmaRef v1.0.0                     # later: the same versions again
+.\Build-Akousma.ps1 -Deps pinned                           # the versions in StrawberryPackageVersions.txt
 ```
 
 The first build of an architecture builds every dependency (several hours). Later runs rebuild only what changed
