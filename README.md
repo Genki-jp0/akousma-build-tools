@@ -1,173 +1,85 @@
-# :hammer_and_wrench: Strawberry MSVC Build Tools
+# :hammer_and_wrench: Akousma MSVC Build Tools
 
-## Akousma
+Build tools for [Akousma](https://github.com/Genki-jp0/Akousma) on Windows with Visual Studio 2022 or 2026.
+`Build-Akousma.ps1` builds every dependency, Akousma itself and the `AkousmaSetup-*.exe` installer in one run, for x64,
+x86 and arm64 (arm64 is cross-compiled on an x64 PC).
 
-This fork holds the build tools for [Akousma](https://github.com/Genki-jp0/Akousma). It is upstream
-strawberry-msvc-build-tools at d7e0c51 with:
+Based on [strawberry-msvc-build-tools](https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools)
+(at d7e0c51) by Jonas Kvinge; Akousma is based on
+[Strawberry Music Player](https://github.com/strawberrymusicplayer/strawberry).
+Licensed under the GPL version 3 (see `COPYING`).
 
-* `Build-Akousma.ps1`: one build script (it replaces `StrawberryMSVCBuild.ps1` and the old `akousma\Build-Strawberry.ps1`
-  wrapper). It prepares the build environment, builds the dependencies, builds Akousma from its git repository
-  (`-AkousmaRepo` at `-AkousmaRef`, default `master`) or from a local checkout (`-AkousmaSource`), and creates the
-  `AkousmaSetup-*.exe` installer. Parallel package builds, per-package change detection, `-List` and `-DryRun`.
-* `local-patches/`: patches for dependencies (`qtbase-*`, `gstreamer-*`, ...), applied automatically. Akousma's own
-  changes are commits in the Akousma repository, not patches.
-* `BUILD.txt`: how to build, the parameters, the local patches and change detection.
+* `Build-Akousma.ps1`: the build script. `Get-Help .\Build-Akousma.ps1 -Detailed` lists every parameter.
+* `BUILD.txt`: the full guide (tool search, build settings, architectures, parameters, folders, local patches, change
+  detection, Audio CD).
+* `local-patches/`: your patches for dependencies (`qtbase-*.patch` -> qtbase, `gstreamer-*.patch` -> gst-plugins-good,
+  ...), applied automatically. Akousma's own changes are commits in the Akousma repository, not patches.
+* `patches/`: the dependency patches from upstream (plus `libcdio-cmake.patch`), applied by the script.
+* `StrawberryPackageVersions.txt`: the dependency versions (upstream's file, name kept). `CopyDLLDependencies.ps1`:
+  collects the DLLs for the installer.
 
-```powershell
-.\Build-Akousma.ps1                                  # Akousma master, everything under C:\Atelier
-.\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma     # a local checkout
-.\Build-Akousma.ps1 -WorkRoot E:\ -DryRun             # check a command line, build nothing
-```
+## Requirements
 
-The upstream instructions below still describe the tools to install.
-
-This repository contains tools to build all the Strawberry Music Player dependencies with Visual Studio 2022 or 2026.
-
-Instructions here are provided as-is, primarily intended for developers working on Strawberry for Windows.
-
-If something here does not work as expected, consider opening a pull request to fix the issue. Due to lack of time, I can not offer much support.
-
-### Requirements
-
-* [Git for Windows](https://gitforwindows.org/)
-* [Powershell 7](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)
-* [Visual Studio 2022 or 2026](https://visualstudio.microsoft.com/vs/)
-* [Qt Visual Studio Tools](https://marketplace.visualstudio.com/items?itemName=TheQtCompany.QtVisualStudioTools2022)
-* [CMake](https://cmake.org/)
-* [Meson](https://mesonbuild.com/)
-* [NASM](https://www.nasm.us/)
+* [PowerShell 7](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)
+* [Visual Studio 2022 or 2026](https://visualstudio.microsoft.com/vs/) with `Desktop development with C++` (nmake, and
+  ninja from `C++ CMake tools for Windows`). arm64 needs two more components, see BUILD.txt.
+* [Git for Windows](https://gitforwindows.org/): also provides `sed`, `patch`, `bzip2` and GNU `tar` (`Git\usr\bin`)
 * [Strawberry Perl](https://strawberryperl.com/)
-* [Python](https://www.python.org/downloads/windows/)
-* [7-Zip](https://www.7-zip.org/download.html)
-* [Win Flex/Bison](https://sourceforge.net/projects/winflexbison/)
-* [Rust compiler MSVC](https://www.rust-lang.org)
-* [NSIS](https://nsis.sourceforge.io/)
-* [NSIS LockedList Plugin](https://nsis.sourceforge.io/LockedList_plug-in)
+* [Python](https://www.python.org/downloads/windows/) 3.10 or newer
+* [CMake](https://cmake.org/), [Meson](https://mesonbuild.com/), [NASM](https://www.nasm.us/),
+  [7-Zip](https://www.7-zip.org/download.html)
+* [Win Flex/Bison](https://sourceforge.net/projects/winflexbison/): a zip, unpack it to e.g. `C:\win_flex_bison`
+* [Rust](https://www.rust-lang.org) (MSVC toolchain) with cargo-c (`cargo install cargo-c`), for gst-plugins-rs
+  (Spotify; not built for x86 or for an arm64 cross-compile)
+* [NSIS](https://nsis.sourceforge.io/) with the [LockedList plugin](https://nsis.sourceforge.io/LockedList_plug-in), for
+  the installer: copy `LockedList\Plugins\LockedList64.dll` to `C:\Program Files (x86)\NSIS\Plugins\` and
+  `LockedList\Plugins\x86-unicode\LockedList.dll` to `C:\Program Files (x86)\NSIS\Plugins\x86-unicode\`
 
-## Windows setup
+Put each tool's folder on PATH (recommended). A tool that isn't on PATH is searched for (registry, usual folders,
+`$env:SMB_TOOL_PATHS`, Program Files and the drive roots; see BUILD.txt), except `makensis`: add
+`C:\Program Files (x86)\NSIS` to PATH yourself (ninja comes from the Visual Studio environment). Before it builds
+anything the script checks sed, patch, nasm, win_flex, win_bison, perl, python, bzip2, 7z, cmake, meson, nmake and GNU
+tar, and stops at the first one that is missing. Keep other GCC / MinGW installations off PATH (Strawberry Perl's own
+`c\bin` is taken off PATH by the script).
 
-### Manual installation on Windows
+The script downloads everything else itself: jom, the dependency sources and git clones, and the Akousma source.
 
-Download and install manually:
-- [Git](https://git-scm.com/downloads)
-    - Default settings can be used
-- [Visual Studio 2022/2026 Community](https://visualstudio.microsoft.com/vs/)
-    - Select `Desktop development with C++`
+## Building
 
-### Clone repositories and download tools/dependencies
-
-Open a `PowerShell 7` shell and type:
-
-```powershell
-mkdir C:\data\projects\strawberry
-cd C:\data\projects\strawberry
-git clone https://github.com/strawberrymusicplayer/strawberry.git
-git clone https://github.com/strawberrymusicplayer/strawberry-msvc.git
-cd strawberry-msvc
-```
-
-### Installation
-
-Install manually from `C:\data\projects\strawberry\msvc_\downloads`:
-- **Required**:
-    - Install `7z<VERSION>-x64.exe`
-    - Install `cmake-<VERSION>-windows-x86_64.msi`
-    - Install `python-<VERSION>-amd64.exe`
-        - In first dialog:
-            - Check: `Add python.exe to PATH`
-            - Click `Install Now` (to use defaults)
-        - In dialog `Setup was successful`:
-            - Click: `Disable path length limit`
-    - Install `strawberry-perl-<VERSION>-64bit.msi`
-    - Extract `win_flex_bison-<VERSION>.zip` to `C:\win_flex_bison`
-    - Install `rustup-init.exe`
-        - Type in a Command Prompt: `cargo install cargo-c`
-- **Recommended: When building dependencies from source**:
-    - Install `nasm-<VERSION>-installer-x64.exe`
-        - Run as `Administrator` and install into `C:\Program Files\NASM`.
-- **Recommended: When creating NSIS Windows installer**:
-    - Install NSIS: `nsis-<NSIS_VERSION>-setup.exe`
-    - Extract NSIS `LockedList.zip` plugin:
-        - Copy `LockedList\Plugins\LockedList64.dll` to `C:\Program Files (x86)\NSIS\Plugins\LockedList64.dll`
-        - Copy `LockedList\Plugins\x86-unicode\LockedList.dll` to `C:\Program Files (x86)\NSIS\Plugins\x86-unicode\LockedList.dll`
-
-### Configure PATH environment variable
-
-Windows Settings | System | About | Advanced system settings | Tab Advanced | Environment Variables:
-- System variables | Path | Edit:
-    - Add: `C:\Program Files\Git\bin` (This is for Unix commands such `sed` and `patch`)
-    - Add: `C:\Program Files (x86)\NSIS`
-    - Make sure no GCC / MinGW-W64 installation is in `PATH` (gcc, g++, etc commands), as that can cause those to be picked up as compiler instead of MSVC.
-
-### Meson installation
-
-Building with Meson 1.6.0 installation results in build issues
-[meson: error: unrecognized arguments:](https://github.com/strawberrymusicplayer/strawberry-msvc/issues/6).
-
-A temporary solution is to remove Meson via Windows Settings | `Apps or remove programs`.
-Then install Meson via Python PIP system wide. Start | `PowerShell 7` and type:
-
-```
-pip install meson
-```
-
-### Optional: Prebuilt binary dependencies
-
-Prebuilt MSVC binaries can be optionally used to speed-up the build process. When this step is skipped, all libraries and dependencies are build from source.
-
-To use prebuilds, download the following `tar.xz` files from Github [strawberry-msvc-dependencies/releases](https://github.com/strawberrymusicplayer/strawberry-msvc-dependencies/releases):
-- For debug, extract `strawberry-msvc-x86_64-debug.tar.xz` to `C:\strawberry_msvc_x86_64_debug`
-- For release, extract `strawberry-msvc-x86_64-release.tar.xz` to `C:\strawberry_msvc_x86_64_release`
-
-## Build Strawberry from source including dependencies
-
-For Akousma use `Build-Akousma.ps1` (see above and `BUILD.txt`); the upstream steps below are kept for reference.
-
-- Set one debug or release in `PATH` environment variable:
-    - For debug: `C:\strawberry_msvc_x86_64_debug\bin`, or:
-    - For release: `C:\strawberry_msvc_x86_64_release\bin`
-
-- Start | `PowerShell 7`
+In PowerShell 7 (pwsh), from anywhere:
 
 ```powershell
-cd C:\data\projects\strawberry\strawberry-msvc
-
-rem For debug build:
-.\StrawberryMSVCBuild.ps1 -build_type debug -arch x86_64 -build_strawberry $true
-
-rem For release build:
-.\StrawberryMSVCBuild.ps1 -build_type release -arch x86_64 -build_strawberry $true
+.\Build-Akousma.ps1                                 # Akousma master, the architectures in build-settings.json
+.\Build-Akousma.ps1 -Arch x64                       # x64 only, this run (-SaveSettings: from now on)
+.\Build-Akousma.ps1 -AkousmaRef v1.0.0              # a branch, tag or commit
+.\Build-Akousma.ps1 -AkousmaSource E:\src\Akousma   # a local checkout, uncommitted changes included
+.\Build-Akousma.ps1 -BuildType debug                # debug build
+.\Build-Akousma.ps1 -List                           # what would be rebuilt and why; builds nothing
+.\Build-Akousma.ps1 -WorkRoot E:\ -DryRun           # the resolved folders, source and patches; builds nothing
 ```
 
-Strawberry and Windows installer executables are generated in:
-- For debug: `C:\data\projects\strawberry\msvc_\build_debug\strawberry\build\`
-- For release: `C:\data\projects\strawberry\msvc_\build_release\strawberry\build\`
+The first build of an architecture builds every dependency (several hours). Later runs rebuild only what changed
+(printing the reason), then relink Akousma and re-create the installer.
 
-## Setting up Strawberry for development in Visual Studio 2022 or 2026
+Output, for x64 release with the default folders:
 
-Optional `Qt Visual Studio Tools` can be installed via the toolbar `Extensions | Manage Extensions` and search for `Qt Visual Studio Tools`. Then click `Install`.
+* `C:\Atelier\data\projects\akousma\msvc_\build_x86_64_release\akousma\build\akousma.exe`
+* `C:\Atelier\data\projects\akousma\msvc_\build_x86_64_release\AkousmaSetup\AkousmaSetup-<version>-msvc-x64.exe`
+  (x86: `build_x86_release\...-msvc-x86.exe`, arm64: `build_arm64_release\...-msvc-arm64.exe`)
+* the log: `C:\Atelier\data\projects\akousma\build.log` (x86: `build_x86.log`), per package: `<build tree>\logs`
 
-Debug build:
-- Make sure the path `C:\strawberry_msvc_x86_64_debug\bin` is added to the `PATH` environment variable before starting Visual Studio 2022 or 2026.
-- Start | Visual Studio 2022 or 2026
-- Open a local folder `C:\data\projects\strawberry\strawberry`
-- Toolbar Project | CMake Settings:
-    - Select Configurations `x64-Debug`
-    - Add `CMake command arguments`: `-DARCH=x86_64 -DICU_ROOT=c:\\strawberry_msvc_x86_64_debug -DBUILD_WERROR=ON -DENABLE_WIN32_CONSOLE=ON -DENABLE_AUDIOCD=OFF -DENABLE_MTP=OFF -DENABLE_GPOD=OFF`
-- Select in the toolbar `x64-Debug`
-- Toolbar: Build | Build All
+## Settings and folders
 
-Release build:
-- Make sure the path `C:\strawberry_msvc_x86_64_release\bin` is added to the `PATH` environment variable before starting Visual Studio 2022 or 2026.
-- Start | Visual Studio 2022 or 2026
-- Open a local folder `C:\data\projects\strawberry\strawberry`
-- Toolbar Project | CMake Settings:
-    - Create new `x64-Release`
-    - Select Configurations `x64-Release`
-    - Add `CMake command arguments`: `-DARCH=x86_64 -DICU_ROOT=c:\\strawberry_msvc_x86_64_release -DBUILD_WERROR=ON -DENABLE_WIN32_CONSOLE=OFF -DENABLE_AUDIOCD=OFF -DENABLE_MTP=OFF -DENABLE_GPOD=OFF`
-    - Save the changes
-    - In the toolbar select `x64-Release`
-    - Project | Delete Cache and Reconfigure
-- Toolbar: Build | Build All
+`build-settings.json`, next to the script, keeps your settings: the architectures (every one, x64, x86 and arm64, until
+you change it), the build type, the Akousma source and the folders. The first run creates it with the defaults;
+`.gitignore` keeps it out of git. A parameter on the command line wins for that run; add `-SaveSettings` to write it
+into the file.
 
-Set breakpoint and press F5 to start debugging and use F10 to step into and F11 to step over.
+Everything goes under `C:\Atelier` by default (`-WorkRoot E:\` moves it all):
+
+* `C:\Atelier\data\projects\akousma\...`: downloads, sources, build trees, `build.log`, jom
+* `C:\Atelier\akousma_msvc_<arch>_<build type>`: the dependency prefix
+* `C:\Atelier\temp`, `C:\Atelier\cache\pip`, `C:\Atelier\cargo`, `C:\Atelier\rustup`
+
+Coming from the older `C:\` or `strawberry` folders, or using upstream's prebuilt dependency packages: see "Folders" in
+BUILD.txt.
