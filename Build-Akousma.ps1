@@ -51,6 +51,15 @@
   ...), or to <package> for local-patches\<package>\*.patch. Akousma's own changes are commits in the Akousma repository,
   so patches for Akousma (or Strawberry) are not accepted here.
 
+  Build settings: build-settings.json next to this script holds the architectures, the build type, the Akousma source and
+  the locations. It is created with the defaults on the first run (every architecture: x86_64, x86, arm64), is your own
+  (.gitignore keeps it out of git) and can be edited (JSON: write \\ for a backslash, or use /). For each setting a parameter
+  passed on the command line wins, then the file, then the default; a setting missing from the file uses the default.
+  Passed parameters are for that run only: add -SaveSettings to keep them in the file. In the locations, {WorkRoot},
+  {ProjectRoot}, {MsvcRoot}, {DownloadsPath}, {BuildPath} (each usable in the locations below it in the file), {Arch} and
+  {BuildType} stand for the resolved values; a location still at its default follows the ones it is made of (change
+  WorkRoot, and everything under it moves). "" = automatic (HostPrefixPath, GitBinPath) or not used (AkousmaSource).
+
 .PARAMETER AkousmaRepo       Git URL of the Akousma source. Default https://github.com/Genki-jp0/Akousma.git.
 .PARAMETER AkousmaRef        Branch, tag or commit of -AkousmaRepo to build. Default master.
 .PARAMETER AkousmaSource     A local Akousma checkout to build instead of -AkousmaRepo, as it is (uncommitted changes included).
@@ -61,9 +70,11 @@
                              AkousmaSetup-1.0.0+gitabc1234-...). Off by default: release builds say "Akousma 1.0.0" only.
                              Passed to CMake as -DAKOUSMA_INCLUDE_GIT_COMMIT=ON.
 .PARAMETER BuildType          release (default) or debug.
-.PARAMETER Arch               x64 (default; also x86_64 / amd64), x86 or arm64. Several architectures are built one after the
-                              other, each in a fresh pwsh process (so one Visual Studio environment never leaks into the next)
-                              and in its own folders: -Arch x64,x86 (or "x64,x86" in one argument, or both = x64 + x86).
+.PARAMETER Arch               x64 (also x86_64 / amd64), x86 or arm64. Default: the Arch list in build-settings.json, which
+                              is every architecture (x86_64, x86, arm64) until you change it (-SaveSettings). Several are
+                              built one after the other, each in a fresh pwsh process (so one Visual Studio environment
+                              never leaks into the next) and in its own folders: -Arch x64,x86 (or "x64,x86" in one
+                              argument, or both = x64 + x86).
                               Every architecture has its own build tree, dependency prefix, logs and installer; downloads and
                               git clones are shared. A build that fails does not stop the next architecture; the run ends with
                               a summary and exit code 1 if any failed.
@@ -80,7 +91,13 @@
 .PARAMETER List               Print the per-package decision (skip / adopt / build / rebuild and why) and the build queue,
                               then exit.
 .PARAMETER DryRun             Print the resolved locations, the Akousma source and the local patches, then exit. Changes
-                              nothing; also runs on Linux and macOS, for checking a command line.
+                              nothing but build-settings.json (created when missing; written with -SaveSettings); also runs
+                              on Linux and macOS, for checking a command line.
+.PARAMETER SaveSettings       Write the settings passed on this command line (-Arch, -BuildType, -AkousmaRepo, -AkousmaRef,
+                              -AkousmaSource, -WorkRoot and the other locations) into build-settings.json, so later runs use
+                              them without passing them. Paths are saved absolute. -Arch x64,x86 -SaveSettings: from now
+                              on x64 and x86 are built; -Arch x86 alone builds x86 for that run only. With -DryRun: save,
+                              don't build.
 .PARAMETER ForceRebuild       Rebuild these packages even when they are up to date, e.g. -ForceRebuild gst-plugins-good,akousma
                               ('all' = everything). Dependencies get a clean copy; akousma a fresh copy of its source and an
                               empty build folder.
@@ -149,6 +166,9 @@
   .\Build-Akousma.ps1 -Arch x64,x86
   # arm64 on an x64 PC (cross-compile; the x64 build is built first, or reused when it is up to date)
   .\Build-Akousma.ps1 -Arch x64,arm64
+  # Build only x64 from now on (kept in build-settings.json), then go back to every architecture
+  .\Build-Akousma.ps1 -Arch x64 -SaveSettings
+  .\Build-Akousma.ps1 -Arch x64,x86,arm64 -SaveSettings -DryRun
 #>
 
 [CmdletBinding()]
@@ -171,7 +191,7 @@ param(
   # One or more of x64 / x86_64 / amd64, x86, arm64, both (= x64,x86). Validated below, so "x64,x86" in one argument
   # (pwsh -File, cmd) works too.
   [ArgumentCompleter({ param($cmd, $param, $word) @('x64', 'x86', 'arm64', 'both', 'x86_64', 'amd64') | Where-Object { $_ -like "$word*" } })]
-  [string[]]$Arch           = @("x86_64"),
+  [string[]]$Arch           = @("x86_64", "x86", "arm64"),
   [ValidateRange(0, 512)]
   [int]$Jobs                = 0,
   [Alias('parallel_packages')]
@@ -181,6 +201,7 @@ param(
   [string[]]$Skip           = @(),
   [switch]$List,
   [switch]$DryRun,
+  [switch]$SaveSettings,
   [Alias('force_rebuild')]
   [string[]]$ForceRebuild   = @(),
   [Alias('no_change_detection')]
@@ -233,8 +254,11 @@ param(
 
   [string]$GitBinPath       = "",   # empty = <Git root>\bin, found through git.exe on PATH
 
-  # Internal: the build itself (-inner_build, started by the preparation part of this script) and the per-package child
+  # Internal: one architecture of a multi-architecture run (-arch_build: the settings are resolved by the run that starts
+  # it), the build itself (-inner_build, started by the preparation part of this script) and the per-package child
   # processes of the parallel build (-child_build).
+  [Parameter(DontShow)]
+  [switch]$arch_build,
   [Parameter(DontShow)]
   [string]$jom_path         = "",
   [Parameter(DontShow)]
@@ -268,13 +292,14 @@ $ErrorActionPreference = "Stop"
 # The steps below Set-Location, so make every user-supplied path absolute now.
 # ---------------------------------------------------------------------
 function Resolve-UserPath([string]$p) {
-  # Empty = not passed (the default is derived later); a bare 'E:' stays the drive root; URLs are left alone.
-  if ([string]::IsNullOrWhiteSpace($p) -or $p -match '^[A-Za-z]:$' -or $p -match '^[A-Za-z][A-Za-z0-9+.-]+://') { return $p }
+  # Empty = not passed (the default is derived later); a bare 'E:' stays the drive root; URLs are left alone, and so is a
+  # location that starts with a {placeholder} (build settings; filled in when the locations are resolved).
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -match '^[A-Za-z]:$' -or $p -match '^[A-Za-z][A-Za-z0-9+.-]+://' -or $p.StartsWith('{')) { return $p }
   return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
 }
 
 # ---------------------------------------------------------------------
-# Architectures: -Arch x64 (default), x86, arm64, or several (-Arch x64,x86 / -Arch both), built one after the other.
+# Architectures: -Arch x64, x86, arm64, or several (-Arch x64,x86 / -Arch both), built one after the other.
 # ---------------------------------------------------------------------
 function ConvertTo-ArchList([string[]]$Names) {
   # Upstream's names: x86_64 (x64, amd64), x86, arm64; both = x86_64 + x86. 'a,b' in one argument counts as two (pwsh -File
@@ -293,6 +318,100 @@ function ConvertTo-ArchList([string[]]$Names) {
   if ($list.Count -eq 0) { $list.Add('x86_64') }
   return ,$list.ToArray()
 }
+
+# ---------------------------------------------------------------------
+# Build settings: build-settings.json next to this script (ignored by git). Created with the defaults when it is missing.
+# Each setting: the parameter if passed, else the file, else the default. -SaveSettings writes the passed ones into it.
+# Only the run started by the user reads or writes it: the per-architecture processes below get the resolved values.
+# ---------------------------------------------------------------------
+$SettingsPath = Join-Path $PSScriptRoot 'build-settings.json'
+# The defaults, as written to a new file. The locations are the derived defaults of "0. Resolve locations" below; a value
+# still equal to its default here is left to that derivation, so it follows -WorkRoot and the other locations.
+$SettingsDefaults = [ordered]@{
+  Arch           = @('x86_64', 'x86', 'arm64')
+  BuildType      = 'release'
+  AkousmaRepo    = 'https://github.com/Genki-jp0/Akousma.git'
+  AkousmaRef     = 'master'
+  AkousmaSource  = ''
+  WorkRoot       = 'C:\'
+  ProjectRoot    = '{WorkRoot}\data\projects\akousma'
+  MsvcRoot       = '{ProjectRoot}\msvc_'
+  DownloadsPath  = '{MsvcRoot}\downloads'
+  SrcPath        = '{DownloadsPath}'
+  BuildPath      = '{MsvcRoot}\build_{Arch}_{BuildType}'
+  PrefixPath     = '{WorkRoot}\akousma_msvc_{Arch}_{BuildType}'
+  HostPrefixPath = ''
+  JomDir         = '{ProjectRoot}\tools\jom'
+  TempPath       = '{WorkRoot}\temp'
+  PipCachePath   = '{WorkRoot}\cache\pip'
+  CargoHome      = '{WorkRoot}\cargo'
+  RustupHome     = '{WorkRoot}\rustup'
+  LogPath        = '{ProjectRoot}\build.log'
+  LogDir         = '{BuildPath}\logs'
+  GitBinPath     = ''
+}
+$SettingsPathKeys = @($SettingsDefaults.Keys | Where-Object { $_ -notin 'Arch', 'BuildType', 'AkousmaRepo', 'AkousmaRef' })
+$SettingsApplied = [ordered]@{}   # the values taken from the file, passed on to the per-architecture processes
+if (-not $arch_build) {
+  $settings = [ordered]@{}
+  foreach ($k in $SettingsDefaults.Keys) { $settings[$k] = $SettingsDefaults[$k] }
+  $settingsExists = Test-Path -LiteralPath $SettingsPath -PathType Leaf
+  if ($settingsExists) {
+    $text = Get-Content -Raw -LiteralPath $SettingsPath
+    $fromFile = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      try { $fromFile = $text | ConvertFrom-Json -AsHashtable }
+      catch { throw "Build settings: $SettingsPath is not valid JSON ($($_.Exception.Message)). Fix it (a backslash is written \\ in JSON, or use /), or delete it to start again from the defaults." }
+      if ($fromFile -isnot [System.Collections.IDictionary]) { throw "Build settings: $SettingsPath must hold one JSON object: { `"Arch`": [ ... ], `"BuildPath`": `"...`", ... }." }
+    }
+    foreach ($k in @(if ($fromFile) { $fromFile.Keys })) {
+      $v = $fromFile[$k]
+      if (-not $SettingsDefaults.Contains($k)) { Write-Warning "Build settings: unknown setting '$k' in $SettingsPath is ignored."; continue }
+      if ($null -eq $v) { continue }   # null = the default
+      if ($k -eq 'Arch') {
+        if (@($v | Where-Object { $_ -isnot [string] }).Count) { throw "Build settings: Arch in $SettingsPath must be a list of names, e.g. [ `"x86_64`", `"x86`" ]." }
+        try { $v = ConvertTo-ArchList @($v) } catch { throw "Build settings: Arch in ${SettingsPath}: $($_.Exception.Message)" }
+      }
+      elseif ($v -isnot [string]) { throw "Build settings: $k in $SettingsPath must be a string (`"...`")." }
+      elseif ($k -eq 'BuildType' -and $v -notin 'debug', 'release') { throw "Build settings: BuildType in $SettingsPath must be `"release`" or `"debug`", not `"$v`"." }
+      $settings[$k] = $v
+    }
+  }
+  if ($SaveSettings) {
+    # The passed settings, as this run uses them: the architectures by their canonical names, the paths absolute.
+    foreach ($k in $SettingsDefaults.Keys) {
+      if (-not $PSBoundParameters.ContainsKey($k)) { continue }
+      $settings[$k] = if ($k -eq 'Arch') { ConvertTo-ArchList $Arch } elseif ($k -in $SettingsPathKeys) { Resolve-UserPath $PSBoundParameters[$k] } else { [string]$PSBoundParameters[$k] }
+    }
+  }
+  if (-not $settingsExists -or $SaveSettings) {
+    $savedKeys = @($SettingsDefaults.Keys | Where-Object { $SaveSettings -and $PSBoundParameters.ContainsKey($_) })
+    try {
+      [System.IO.File]::WriteAllText($SettingsPath, ($settings | ConvertTo-Json -Depth 4) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+      $settingsNote = if (-not $SaveSettings) { 'created with the defaults' }
+                      elseif ($savedKeys.Count) { "saved -$($savedKeys -join ', -')" } else { 'saved (no settings were passed)' }
+    }
+    catch {
+      if ($SaveSettings) { throw "Build settings: could not write ${SettingsPath}: $($_.Exception.Message)" }
+      $settingsNote = "not created ($($_.Exception.Message)); using the defaults"
+    }
+  }
+  else { $settingsNote = 'read' }
+  # Apply what is not passed on the command line. A passed -AkousmaRepo / -AkousmaRef means the repository, so a local
+  # checkout in the file (AkousmaSource) is not used then. Relative paths in the file are relative to this script's folder.
+  $useSettingsSource = -not ($PSBoundParameters.ContainsKey('AkousmaRepo') -or $PSBoundParameters.ContainsKey('AkousmaRef'))
+  foreach ($k in $SettingsDefaults.Keys) {
+    if ($PSBoundParameters.ContainsKey($k) -or ($k -eq 'AkousmaSource' -and -not $useSettingsSource)) { continue }
+    $v = $settings[$k]
+    if ((@($v) -join ',') -ceq (@($SettingsDefaults[$k]) -join ',')) { continue }   # the default: derived as before
+    if ($k -in $SettingsPathKeys -and $v -and -not $v.StartsWith('{') -and -not [System.IO.Path]::IsPathRooted($v) -and $v -notmatch '^[A-Za-z]:') {
+      $v = Join-Path $PSScriptRoot $v
+    }
+    Set-Variable -Name $k -Value $v
+    $SettingsApplied[$k] = $v
+  }
+  Write-Host "Build settings: $SettingsPath ($settingsNote)" -ForegroundColor Cyan
+}
 $ArchList = ConvertTo-ArchList $Arch
 if ($ArchList.Count -gt 1) {
   # Several architectures: one fresh pwsh per architecture, one after the other. Each starts from this window's environment,
@@ -306,12 +425,15 @@ if ($ArchList.Count -gt 1) {
                   'OldPrefixPath', 'GitBinPath', 'HostPrefixPath')
   $forward = [ordered]@{}
   foreach ($k in @($PSBoundParameters.Keys)) {
-    if ($k -eq 'Arch') { continue }
+    if ($k -in 'Arch', 'SaveSettings') { continue }
     $v = $PSBoundParameters[$k]
     if ($v -is [System.Management.Automation.SwitchParameter]) { $v = $v.IsPresent }
     elseif ($k -in $pathParams) { $v = Resolve-UserPath $v }
     $forward[$k] = $v
   }
+  # The values from build-settings.json too: each architecture's process uses them as passed and never opens the file.
+  foreach ($k in $SettingsApplied.Keys) { if ($k -ne 'Arch') { $forward[$k] = $SettingsApplied[$k] } }
+  $forward['arch_build'] = $true
   $scriptLiteral = $PSCommandPath.Replace("'", "''")
   $results = [ordered]@{}
   $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -506,9 +628,26 @@ function Normalize-Path([string]$p) {
   if ($p -notmatch '^[A-Za-z]:\\$') { $p = $p.TrimEnd('\') }
   return $p
 }
+function Expand-LocationTokens([string]$p) {
+  # {Arch}, {BuildType}, {WorkRoot}, {ProjectRoot}, {MsvcRoot}, {DownloadsPath}, {BuildPath} (build settings) -> their
+  # values. The locations are resolved in that order, so each one can only use the ones before it.
+  $out = $p
+  foreach ($m in [regex]::Matches($p, '\{(\w+)\}')) {
+    $name = $m.Groups[1].Value
+    if ($name -notin 'Arch', 'BuildType', 'WorkRoot', 'ProjectRoot', 'MsvcRoot', 'DownloadsPath', 'BuildPath') {
+      throw "'$p': unknown placeholder {$name}. Use {WorkRoot}, {ProjectRoot}, {MsvcRoot}, {DownloadsPath}, {BuildPath}, {Arch} or {BuildType}."
+    }
+    $value = [string](Get-Variable -Name $name -ValueOnly)
+    if (-not $value -or $value.Contains('{')) {
+      throw "'$p': {$name} is not resolved yet here; a location can only use the ones before it (WorkRoot, ProjectRoot, MsvcRoot, DownloadsPath, BuildPath)."
+    }
+    $out = $out.Replace($m.Value, $value)
+  }
+  return $out
+}
 function Resolve-Default([string]$Value, [string]$Default) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return (Normalize-Path $Default) }
-  return (Normalize-Path $Value)
+  return (Normalize-Path (Expand-LocationTokens $Value))
 }
 function Test-SamePath($a, $b) {
   if (-not (Test-Path -LiteralPath $a) -or -not (Test-Path -LiteralPath $b)) { return $false }
@@ -527,7 +666,7 @@ $WorkRoot = (Normalize-Path $WorkRoot).TrimEnd('\')
 # and gets _<arch> appended for the other architectures, unless its name already says the architecture. So an x64 command
 # line plus -Arch x86 builds next to the x64 folders, never into them.
 function Add-ArchSuffix([string]$Path, [switch]$File) {
-  if ([string]::IsNullOrWhiteSpace($Path) -or $Arch -eq 'x86_64') { return $Path }
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Arch -eq 'x86_64' -or $Path.Contains('{Arch}')) { return $Path }
   $trimmed = if ($Path -match '^[A-Za-z]:[\\/]?$') { $Path } else { $Path.TrimEnd('\', '/') }
   $leaf = Split-Path -Leaf $trimmed
   $token = "(?i)(^|[^a-z0-9])$([regex]::Escape($Arch))$(if ($Arch -eq 'x86') { '(?!_64)' })([^a-z0-9]|$)"
@@ -580,10 +719,11 @@ $CrossBuild = $Arch -eq 'arm64' -and [System.Runtime.InteropServices.RuntimeInfo
 if ($CrossBuild) {
   if (-not $HostPrefixPath) {
     if ($prefixIsDefault) { $HostPrefixPath = "$WorkRoot\akousma_msvc_x86_64_${BuildType}" }
+    elseif ($prefixArg.Contains('{Arch}')) { $HostPrefixPath = Expand-LocationTokens $prefixArg.Replace('{Arch}', 'x86_64') }
     elseif ((Add-ArchSuffix $prefixArg) -ne $prefixArg) { $HostPrefixPath = $prefixArg }
     else { throw "-PrefixPath '$prefixArg' names arm64, so the x64 prefix the arm64 cross-compile needs can't be derived from it. Pass -HostPrefixPath <the x64 prefix>." }
   }
-  $HostPrefixPath = Normalize-Path $HostPrefixPath
+  $HostPrefixPath = Normalize-Path (Expand-LocationTokens $HostPrefixPath)
 }
 else { $HostPrefixPath = "" }
 
@@ -604,7 +744,7 @@ if ([string]::IsNullOrWhiteSpace($GitBinPath)) {
     throw "git.exe not found on PATH. Install Git for Windows (https://git-scm.com/) or pass -GitBinPath."
   }
 }
-if ($GitBinPath) { $GitBinPath = Normalize-Path $GitBinPath }
+if ($GitBinPath) { $GitBinPath = Normalize-Path (Expand-LocationTokens $GitBinPath) }
 
 $locations = [ordered]@{
   ProjectRoot = $ProjectRoot; DownloadsPath = $DownloadsPath; SrcPath = $SrcPath; BuildPath = $BuildPath; PrefixPath = $PrefixPath

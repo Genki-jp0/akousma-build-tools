@@ -83,10 +83,32 @@ Output:
 Each run puts PATH, TEMP and the other environment variables it changes back when it finishes.
 
 
+Build settings
+--------------
+build-settings.json, next to the script, keeps your settings: the architectures (Arch), BuildType, the Akousma source
+(AkousmaRepo, AkousmaRef, AkousmaSource) and the locations (WorkRoot, ProjectRoot, ..., LogDir, GitBinPath). The first
+run creates it with the defaults: every architecture (x86_64, x86, arm64) and the folders under "Folders". It is yours:
+.gitignore keeps it out of git, so updating the build tools never changes it. For each setting a parameter on the
+command line wins, then the file, then the default (a setting missing from the file uses the default). Parameters on the
+command line are for that run only; add -SaveSettings to write them into the file:
+
+  .\Build-Akousma.ps1                                     the architectures in the file (all three at first)
+  .\Build-Akousma.ps1 -Arch x86                           x86 this once; the file is not changed
+  .\Build-Akousma.ps1 -Arch x64,x86 -SaveSettings         x64 and x86, now and from now on
+  .\Build-Akousma.ps1 -WorkRoot E:\ -SaveSettings -DryRun save without building
+
+Or edit the file (JSON: write \\ for a backslash, or use /). The locations use placeholders for the resolved values:
+{WorkRoot}, {ProjectRoot}, {MsvcRoot}, {DownloadsPath}, {BuildPath} (each one in the locations after it), {Arch} and
+{BuildType}, e.g. "PrefixPath": "{WorkRoot}\\akousma_msvc_{Arch}_{BuildType}". A location still at its default follows
+the ones it is made of: "WorkRoot": "E:\\" moves everything to E:. "" = automatic (HostPrefixPath, GitBinPath) or not
+used (AkousmaSource). Delete the file to get the defaults back. Each run starts with the line
+"Build settings: <file> (read / created with the defaults / saved ...)".
+
+
 Architectures: x64 and x86
 --------------------------
-  .\Build-Akousma.ps1                     x64 (amd64), as before
-  .\Build-Akousma.ps1 -Arch x86           x86 (32-bit)
+  .\Build-Akousma.ps1                     every architecture in build-settings.json (x64, x86, arm64 by default)
+  .\Build-Akousma.ps1 -Arch x86           x86 (32-bit) only, this once (-SaveSettings: from now on)
   .\Build-Akousma.ps1 -Arch x64,x86       both, one after the other (also: -Arch both, or "x64,x86" in one argument)
 All the other parameters work the same with any -Arch (-ForceRebuild, -List, -DryRun, -AkousmaSource, ...); with
 several architectures they apply to each one.
@@ -215,14 +237,15 @@ Removed, compared with Build-Strawberry.ps1 + StrawberryMSVCBuild.ps1:
                           parallel build processes as $env:AKOUSMA_WORK_ROOT.
 
 -Arch takes several architectures now (see "Architectures: x64 and x86"); -Arch x64 / amd64 build in the x86_64
-folders (they used to make build_x64_* / strawberry_msvc_x64_* folders of their own).
+folders (they used to make build_x64_* / strawberry_msvc_x64_* folders of their own). Without -Arch, the architectures
+in build-settings.json are built: every one (x64, x86, arm64) until you change it (see "Build settings").
 The default folders are named akousma now (data\projects\akousma, akousma_msvc_<arch>_<type>, jom in
 <ProjectRoot>\tools\jom); see "Folders".
 Unchanged: -BuildType, -Jobs, -ParallelPackages, -Only, -Skip, -List, -ForceRebuild, -NoChangeDetection,
 -RebuildDependents, -VersionOverrides, -GitRefs, -VersionsFile, -CiVersionsFile, -CiVersionsRef, -GstGoodPatch,
 -NoAutoPatches, -SkipBuild, -RemoveOldCDrive, -WorkRoot and all the path parameters (-ProjectRoot, -MsvcRoot,
 -DownloadsPath, -SrcPath, -BuildPath, -PrefixPath, -JomDir, -TempPath, -PipCachePath, -CargoHome, -RustupHome,
--LogPath, -LogDir, -Old*, -GitBinPath). New: -DryRun.
+-LogPath, -LogDir, -Old*, -GitBinPath). New: -DryRun, -SaveSettings (build-settings.json).
 -CiVersionsRef auto now picks the strawberry-msvc-dependencies build.yaml that existed when the Akousma commit being
 built was made. Package names for -Only / -Skip / -ForceRebuild: akousma (was strawberry) and akousma-setup (was
 strawberry-setup).
