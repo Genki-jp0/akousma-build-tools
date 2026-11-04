@@ -27,9 +27,10 @@ don't have them.
 The distribution is read from /etc/os-release (ID, ID_LIKE). Anything else: the script doesn't check packages, but
 still builds when the libraries are there (install them by the lists in the script).
 
-For the architectures other than the machine's own (see "Architectures"): podman or docker, and for arm64 on an
-amd64 machine (or amd64 / i386 on an arm64 one) qemu-user with its binfmt_misc registration. --install-deps installs
-them: podman (only when neither podman nor docker works) and
+For the architectures other than the machine's own (see "Architectures"): podman or docker. arm64 on an amd64 machine
+is cross-compiled in a container and needs nothing else. Only amd64 / i386 on an arm64 machine, and arm64 on amd64
+with --arm64-mode emulate, need qemu-user with its binfmt_misc registration. --install-deps installs them: podman (only
+when neither podman nor docker works) and
   apt     qemu-user-static          (Debian 12/13, Ubuntu 24.04+)
   dnf     qemu-user-static-aarch64  (qemu-user-static-x86 for amd64 / i386 on an arm64 machine)
   pacman  qemu-user-static qemu-user-static-binfmt
@@ -82,6 +83,8 @@ Architectures (ARCHS, default amd64,i386,arm64; see "Architectures"):
   --container-arg ARG    an extra argument for "<engine> run" (the image setup and the build), repeatable; e.g.
                          --container-arg=--dns=192.168.1.1. Settings file: CONTAINER_ARGS, separated by spaces.
   --update-images        pull the base images again and make the build images again (the newest packages).
+  --arm64-mode MODE      how arm64 is built on an amd64 machine (ARM64_MODE): cross (default) or emulate. See
+                         "Architectures". On an arm64 machine arm64 is native and this does nothing.
 
 Akousma source:
   --repo URL             git URL, default https://github.com/Genki-jp0/Akousma.git. Cloned to <SRC_PATH>/akousma.
@@ -146,9 +149,9 @@ Build settings
 --------------
 build-settings.linux.conf keeps: ARCHS, WORK_ROOT, PROJECT_ROOT, DOWNLOADS_PATH, SRC_PATH, BUILD_PATH, PREFIX_PATH,
 OUTPUT_PATH, TOOLS_PATH, LOG_PATH, AKOUSMA_REPO, AKOUSMA_REF, AKOUSMA_SOURCE, BUILD_TYPE, OUTPUTS, JOBS, WERROR, TESTS,
-CMAKE_ARGS, CONTAINER_ENGINE, CONTAINER_IMAGES, CONTAINER_ARGS. (Windows' Build-Akousma.ps1 has its own
+CMAKE_ARGS, CONTAINER_ENGINE, CONTAINER_IMAGES, CONTAINER_ARGS, ARM64_MODE. (Windows' Build-Akousma.ps1 has its own
 build-settings.json; the two files are independent.) An older file without the new keys gets the defaults for them
-(all three architectures); --save-settings adds the keys that are missing.
+(all three architectures, ARM64_MODE=cross); --save-settings adds the keys that are missing.
 The first run creates it with the defaults (with a comment per line). For each setting the command line wins, then
 the file, then the default (a line missing from the file = the default). Command-line options are for that run only;
 --save-settings writes them into the file, keeping your other lines and comments:
@@ -196,8 +199,9 @@ Inside BUILD_PATH:
   rpmbuild/       rpmbuild's _topdir
   home/           HOME of a container build
 
-The install folder (PREFIX_PATH) is deleted and installed again by each build, so files Akousma doesn't install any
-more don't stay behind; the script only deletes it when it made it (marker file .akousma-build-tools). An install
+The install folder (PREFIX_PATH) is emptied and installed again by each build, so files Akousma doesn't install any
+more don't stay behind; the script only empties it when it made it (marker file .akousma-build-tools; the folder
+itself stays: in a container build it is a mount point). An install
 folder that isn't writable (e.g. --prefix /usr/local) is installed with sudo and not deleted first. To start the
 installed build: ~/Atelier/akousma_linux_x86_64_release/bin/akousma. It uses the distribution's libraries, so it runs
 on this system only. The install folder of a container architecture uses the image's libraries: it runs in that
@@ -245,13 +249,14 @@ every one builds the same Akousma commit: the run you start resolves (and fetche
 
 The machine's own architecture (uname -m) is built natively, as described in the rest of this file. Each other one is
 built in a container, because a distribution's packages only exist for its own architecture on its own release:
-  - the script makes a build image per architecture once, localhost/akousma-build:<arch>-<base image>: it pulls the
-    base image for that platform (podman/docker pull --platform linux/386 or linux/arm64), checks that its programs
-    run here, runs itself in it as root with --image-setup (installs every package group of that distribution: build,
-    runtime, tests, appimage and deb or rpm, as --install-deps would) and commits the container. The image is made
-    again when the base image or the package lists in the script change, or with --update-images (newest packages).
-    Like on the machine itself, the packages in an image are only updated when you ask for it; a new image changes
-    the package versions, so the next build rebuilds (see "Change detection").
+  - the script makes a build image per architecture once, localhost/akousma-build:<arch>-<base image> (arm64
+    cross-compiled: arm64-cross-<base image>): it pulls the base image for that platform (podman/docker pull
+    --platform linux/386, linux/arm64, or linux/amd64 for a cross build), checks that its programs run here, runs
+    itself in it as root with --image-setup (installs every package group of that distribution: build, runtime,
+    tests, appimage and deb or rpm, as --install-deps would) and commits the container. The image is made again when
+    the base image or the package lists in the script change, or with --update-images (newest packages). Like on the
+    machine itself, the packages in an image are only updated when you ask for it; a new image changes the package
+    versions, so the next build rebuilds (see "Change detection").
   - then it runs the build in a new container of that image: "<engine> run --rm --platform ... --network host
     --security-opt label=disable" with every folder the build uses mounted at the same path (the build tree, install
     folder, packages folder, tools, git clones, --source; the script's folder and the settings file read-only), so
@@ -261,34 +266,61 @@ built in a container, because a distribution's packages only exist for its own a
     so uname -m says i686 as CMake and the AppImage tools expect. Ctrl-C stops the container.
 How each architecture's programs run on the machine:
   i386 on amd64     natively (an amd64 kernel runs 32-bit programs): about as fast as the amd64 build
-  arm64 on amd64    qemu-user (qemu-aarch64 via binfmt_misc, F flag): every compiler run is emulated, roughly 5 to 10
-                    times slower; a first build takes hours, later ones only recompile what changed
-  amd64, i386 on arm64   qemu-user (qemu-x86_64, qemu-i386), the same way
+  arm64 on amd64    cross-compiled (ARM64_MODE=cross, the default): the compiler and every build tool are amd64
+                    programs, so it is as fast as the amd64 build (see "arm64 on amd64: cross-compiled" below)
+                    --arm64-mode emulate: an arm64 container under qemu-user (qemu-aarch64 via binfmt_misc, F flag):
+                    every compiler run is emulated, roughly 5 to 10 times slower; a first build takes hours
+  amd64, i386 on arm64   qemu-user (qemu-x86_64, qemu-i386), emulated the same way
 The base images (CONTAINER_IMAGES or --container-image arch=image chooses another):
-  this machine          i386                                 the other one(s)
+  this machine          i386                                 the emulated one(s)
   Debian 12/13 (...)    docker.io/library/debian:<codename>  docker.io/library/debian:<codename>
   Ubuntu 24.04 (...)    docker.io/library/debian:trixie      docker.io/library/ubuntu:<VERSION_ID>
   Fedora 43 (...)       docker.io/library/debian:trixie      registry.fedoraproject.org/fedora:<VERSION_ID>
   openSUSE Tumbleweed   docker.io/library/debian:trixie      registry.opensuse.org/opensuse/tumbleweed:latest
   anything else         docker.io/library/debian:trixie      docker.io/library/debian:trixie
-The other architectures get the machine's distribution release where it has an image for them, so their packages and
-outputs match the machine's build (a Fedora machine gets an aarch64 .rpm). i386 always gets Debian, because:
+arm64 cross-compiled on amd64: docker.io/library/debian:trixie (its amd64 image) on every distribution;
+CONTAINER_IMAGES arm64=... may name another Debian image (Ubuntu keeps its arm64 packages on another mirror,
+ports.ubuntu.com, so an Ubuntu image is refused with that message). The emulated architectures get the machine's
+distribution release where it has an image for them, so their packages and outputs match the machine's build (with
+--arm64-mode emulate, a Fedora machine gets an aarch64 .rpm). i386 always gets Debian, because:
   - Debian 13 (trixie) still builds every package Akousma needs for i386: Qt 6.8.2, KDSingleApplication 1.1.0,
     LayerShellQt 6.3, TagLib 2.0, GStreamer 1.26, CMake 3.31, gtest (checked 2026-11 in a linux/386 trixie container).
     Debian 12 (bookworm) has Qt 6.4.2 for i386 (Akousma's minimum) but KDSingleApplication only from source.
   - Ubuntu has no i386 Qt 6 and no i386 image; Fedora has no i686 image (its i686 packages are multilib only); the
     Arch Linux image is amd64 only, openSUSE has no i586 Tumbleweed image.
-Why containers, not cross-compiling: Debian's multiarch could cross-compile on a Debian machine, but only on Debian of
-the same release, and the AppImage tools (linuxdeploy and its Qt plugin) have to run the target architecture's
-programs anyway. Containers work the same on every distribution, need no root (podman) and leave the machine's
-packages alone.
+
+arm64 on amd64: cross-compiled
+  Like Build-Akousma.ps1 builds arm64 on an x64 PC. The build image is an amd64 Debian 13 with dpkg multiarch:
+  "dpkg --add-architecture arm64", then crossbuild-essential-arm64 (aarch64-linux-gnu-gcc / g++), CMake, ninja and
+  Qt's tools (moc, uic, rcc, lrelease) for amd64, and every library package Akousma uses as name:arm64 (the apt-cross
+  lists in the script: qt6-base-dev:arm64, libgstreamer1.0-dev:arm64, libtag-dev:arm64, ... and pkgconf:arm64 for
+  aarch64-linux-gnu-pkg-config). They install side by side: the -dev packages are Multi-Arch: same (or have no amd64
+  counterpart in the image), the Qt tool packages Multi-Arch: foreign (checked 2026-11 in Debian 13).
+  KDSingleApplication 1.1.0 and LayerShellQt 6.3 come from Debian as for i386. Akousma is configured with
+  linux/toolchain-aarch64-linux-gnu.cmake (CMAKE_SYSTEM_PROCESSOR aarch64, the cross compiler,
+  CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu, the arm64 pkg-config, qemu-aarch64 as CMAKE_CROSSCOMPILING_EMULATOR
+  for the tests). Debian's Qt 6
+  is built natively for each architecture, so its CMake packages need no QT_HOST_PATH: the arm64 Qt6CoreTools and
+  Qt6LinguistTools name /usr/lib/qt6/libexec/moc, ... /usr/lib/qt6/bin/lrelease, which are the amd64 programs.
+  Akousma's CMakeLists.txt skips its "Qt sqlite driver" run test when cross-compiling.
+  What runs arm64 code, under qemu-user (qemu-aarch64 in the image, called directly: no binfmt_misc registration is
+  needed on the machine): the tests (--tests, through ctest) and, for the AppImage, ldd (see "AppImage"). The .deb
+  needs none: dpkg-buildpackage -a arm64 (see ".deb").
+  Folders: the same as the emulated arm64 build (build_aarch64_release, akousma_linux_aarch64_release). Switching
+  --arm64-mode in the same folders is a compiler change, so the next build starts the build folder again (a full
+  build), once.
+  No .rpm when cross-compiling (the image is Debian): --rpm on Fedora / openSUSE gives no aarch64 .rpm, with a
+  WARNING naming --arm64-mode emulate, which builds arm64 in that distribution's arm64 image as before.
+  --arm64-mode emulate --save-settings keeps the emulated build. On an arm64 machine arm64 is native; amd64 and i386
+  are still emulated there (no cross build in that direction).
 
 Outputs: each architecture makes the outputs of OUTPUTS: install folder, AppImage (Akousma-<version>-i686.AppImage,
-...-aarch64.AppImage; with the AppImage tools of that architecture), and .deb / .rpm when its distribution can make
-them. An output its distribution can't make is left out for that architecture only, with a WARNING (".deb packages
-are made on Debian / Ubuntu ..."), and the summary says so ("ok (not made here: rpm)"): e.g. --rpm on Fedora gives an
-x86_64 and an aarch64 .rpm but no i686 one (there is no i686 Fedora); --deb on Fedora gives the i386 .deb only.
---native is the package format of the distribution each architecture is built on.
+...-aarch64.AppImage; with the AppImage tools of that architecture, or this machine's for a cross build), and .deb /
+.rpm when its distribution can make them. An output its distribution can't make is left out for that architecture
+only, with a WARNING (".deb packages are made on Debian / Ubuntu ..."), and the summary says so ("ok (not made here:
+rpm)"): e.g. --rpm on Fedora gives an x86_64 .rpm, no i686 one (there is no i686 Fedora) and an aarch64 one only with
+--arm64-mode emulate; --deb on Fedora gives the i386 and arm64 .deb (Debian 13) only. --native is the package format
+of the distribution each architecture is built on.
 
 When an architecture can't be built: before building, the script checks the container engine ("podman info" /
 "docker info") and, for each architecture that needs qemu, its binfmt_misc handler. An architecture whose
@@ -322,8 +354,9 @@ A new commit on the branch (or --ref <commit>) works the same way: the checkout 
 --source on the clone itself (<SRC_PATH>/akousma) builds in the same folder as the clone's builds, so switching
 between the two stays incremental; another --source folder starts the build folder again once (see --source).
 A full rebuild happens only on: the first build of a build type / architecture, --clean, another C++ compiler than the
-build folder was made with (the first line of "c++ --version" is in the stamp; "compiler changed: ... (full
-rebuild)"), a switch of the CMake generator or source folder. Packages and settings changes are incremental too.
+build folder was made with (the first line of "c++ --version", aarch64-linux-gnu-g++ for a cross build, is in the
+stamp; "compiler changed: ... (full rebuild)"; so also a switch of --arm64-mode), a switch of the CMake generator or
+source folder. Packages and settings changes are incremental too.
 Packages: the .deb build (dpkg-buildpackage) keeps its own obj-* build folder and the AppImage its AppDir; they
 take the build's files, not a rebuild.
 Each output has its own stamp (stamps/<output>.stamp): it is made again when the build changed, when its file is gone,
@@ -345,8 +378,16 @@ linuxdeploy-plugin-gstreamer, downloaded into TOOLS_PATH the first time (--updat
   linuxdeploy-plugin-qt-<arch>.AppImage  .../linuxdeploy-plugin-qt/releases/download/continuous/
   linuxdeploy-plugin-gstreamer.sh        raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/master/
 <arch> is x86_64, i386 or aarch64 (linuxdeploy's names; the AppImage itself is named x86_64, i686 or aarch64). The
-tools of a container architecture run in its container (arm64 under qemu). The linuxdeploy AppImage contains the
-AppImage output plugin and appimagetool. To use other builds of these tools,
+tools of a container architecture run in its container (arm64 emulated: under qemu). The linuxdeploy AppImage contains
+the AppImage output plugin and appimagetool.
+arm64 cross-compiled uses this machine's tools (linuxdeploy-x86_64.AppImage, the amd64 build's), natively: linuxdeploy
+reads the ELF files itself and only checks that they are 64-bit, but asks "ldd" for each file's libraries and runs
+"strip". So the script puts an ldd in front of PATH that lists an arm64 file's libraries with the arm64 dynamic loader
+under qemu-user (qemu-aarch64 /lib/ld-linux-aarch64.so.1 --list FILE; anything else goes to /usr/bin/ldd), and
+aarch64-linux-gnu-strip as strip; QMAKE is Debian's aarch64-linux-gnu-qmake6 (the amd64 qmake with the arm64 qt6.conf:
+-query gives the arm64 plugin and library folders), GStreamer's plugin folders come from aarch64-linux-gnu-pkg-config,
+and ARCH=aarch64 makes appimagetool put the aarch64 AppImage runtime in front (it downloads runtime-aarch64 from
+AppImage/type2-runtime unless it has it). To use other builds of these tools,
 put them into TOOLS_PATH under these names (the script doesn't download a file that is there).
 Steps:
   1. cmake --install into <BUILD_PATH>/appimage/AppDir/usr (a separate install with prefix /usr inside the AppDir).
@@ -366,7 +407,8 @@ the oldest distribution you want to support.
 
 .deb (Debian / Ubuntu)
 ----------------------
-Made with Akousma's own debian/ folder, like its CI ("make deb": dpkg-buildpackage -b -d -uc -us -nc):
+Made with Akousma's own debian/ folder, like its CI ("make deb": dpkg-buildpackage -b -d -uc -us -nc; arm64
+cross-compiled: dpkg-buildpackage -a arm64 -b ...):
   1. The source is copied to <BUILD_PATH>/deb/akousma (git's tracked and untracked-not-ignored files; never built in
      your checkout). Its obj-<triplet> build folder is kept between runs, so rebuilds are incremental.
   2. debian/changelog is made from debian/changelog.in (version from Akousma's CMake, the distribution's codename and
@@ -374,13 +416,20 @@ Made with Akousma's own debian/ folder, like its CI ("make deb": dpkg-buildpacka
   3. DEB_BUILD_OPTIONS="nocheck parallel=N" (without nocheck with --tests) dpkg-buildpackage -b -uc -us -nc -d -jN.
      -d because the script checked the dependencies itself (Build-Depends names a KDSingleApplication that is built
      from source on Ubuntu 24.04; CMAKE_PREFIX_PATH points the build at it).
+     Cross-compiled (-a arm64), debhelper itself gives CMake the cross compiler, CMAKE_SYSTEM_PROCESSOR and
+     aarch64-linux-gnu-pkg-config, builds in obj-aarch64-linux-gnu, dpkg-shlibdeps takes the Depends from the arm64
+     packages' shlibs / symbols files and dh_strip uses the cross binutils: no arm64 program runs. A compiler change
+     (e.g. switching --arm64-mode) starts the obj-* folder again.
   4. akousma_<version>-<codename>_<arch>.deb (and the -dbgsym .ddeb) go to OUTPUT_PATH.
 Install it with: sudo apt install ./akousma_<version>-<codename>_amd64.deb
 
 
 .rpm (Fedora / openSUSE)
 ------------------------
-Made with Akousma's dist/unix/akousma.spec.in, like its "rpm" CMake target and its CI:
+Made with Akousma's dist/unix/akousma.spec.in, like its "rpm" CMake target and its CI, on Fedora / openSUSE and in
+their containers. arm64 cross-compiled (the default on amd64) is built on Debian, so it makes no .rpm (WARNING; the
+other architectures still make theirs): --arm64-mode emulate builds arm64 in the distribution's arm64 container under
+qemu-user instead, which makes the aarch64 .rpm (and takes hours the first time).
   1. Akousma's CMake writes <build>/akousma.spec when lsb_release and rpmbuild are installed (the rpm group).
   2. dist/scripts/maketarball.sh makes akousma-<version>.tar.xz into <BUILD_PATH>/rpmbuild/SOURCES.
   3. rpmbuild -bb --nocheck (without --nocheck with --tests) --define "_topdir <BUILD_PATH>/rpmbuild".
@@ -407,10 +456,11 @@ distributions don't keep old versions. So a release lock records instead of pins
 versions/linux/<release>.txt (KEY=value) holds akousma_commit, the build tools commit, the date and archs (the
 architectures it covers), then one section per architecture, its keys prefixed with the architecture
 (amd64.distro=ubuntu, i386.pkg.qt6-base-dev=6.8.2+dfsg-9+deb13u2): the distribution (ID, VERSION_ID, PRETTY_NAME) it
-was built on, the container base image and its digest (container architectures), the package manager, build type and
-CMake arguments, the KDSingleApplication tag and commit when it was built from source, the sha256 of the AppImage
-tools, and pkg.<name>=<version> for every dependency package that was installed (in the image, for a container
-architecture). Each architecture's run writes its section to <build path>/stamps/freeze-<release>.part; the run you
+was built on, the container base image and its digest (container architectures), cross_compiled=aarch64-linux-gnu on
+amd64 for a cross build, the package manager, build type and CMake arguments, the KDSingleApplication tag and commit
+when it was built from source, the sha256 of the AppImage tools, and pkg.<name>=<version> for every dependency package
+that was installed (in the image, for a container architecture; arm64 cross-compiled: pkg.qt6-base-dev:arm64=...).
+Each architecture's run writes its section to <build path>/stamps/freeze-<release>.part; the run you
 started writes the file when every architecture of ARCHS was built (else it says which weren't and writes nothing:
 build them, or freeze with --arch naming the ones the release has). An existing file is never replaced (delete it to
 freeze again). A release with uncommitted local changes can't be frozen. A lock without sections (one architecture,
@@ -464,11 +514,11 @@ rate-limited there), and a CA certificate was passed in with --container-arg (th
     made by the script, full build, install folder and .deb (debian/rules, -DBUILD_WERROR=ON: no warnings). The
     binary is "ELF 32-bit ... Intel 80386"; bin/akousma --version and, after apt install of the .deb in the image,
     /usr/bin/akousma --version print "Akousma 1.0.0". A second run skips everything (3 s).
-  - arm64, Ubuntu 24.04 container under qemu-user: --install-deps installed qemu-user-static and registered
-    qemu-aarch64 itself (no systemd there; flags OPF); the image (apt under qemu: about 45 min), KDSingleApplication
-    from source, then Akousma's build: stopped after 660 of 1410 steps (45 min, with other builds running; the
-    objects are "ELF 64-bit ... ARM aarch64"), so the arm64 install folder and .deb were not made. A first arm64
-    build takes hours this way; later ones are incremental.
+  - arm64, Ubuntu 24.04 container under qemu-user (now --arm64-mode emulate): --install-deps installed
+    qemu-user-static and registered qemu-aarch64 itself (no systemd there; flags OPF); the image (apt under qemu:
+    about 45 min), KDSingleApplication from source, then Akousma's build: stopped after 660 of 1410 steps (45 min,
+    with other builds running; the objects are "ELF 64-bit ... ARM aarch64"), so the arm64 install folder and .deb
+    were not made. A first arm64 build takes hours this way; later ones are incremental.
   - amd64 natively in the same run as the others; a default run (all three) then skipped amd64 and i386 and started
     arm64; Ctrl-C there stopped the container and the run (exit 130, no container left).
   - an architecture that can't be built: --container-engine podman (not installed) -> both container architectures
@@ -491,3 +541,34 @@ Incremental builds, the same day, amd64 (native) build folder of a finished buil
   - the change undone, a normal run with --outputs install: "CMake: configured ... (not run again)", 1 file compiled,
     2 link steps in 5 s, 11 s for the whole run; a run with nothing changed: skip, 5 s
   - a different compiler line in the stamp: --list says "compiler changed: ... (full rebuild)"
+
+arm64 cross-compiled, the same day, the same Ubuntu 24.04.5 amd64 machine (4 CPUs, docker, nothing else building),
+Akousma master 43804f0, --container-image arm64=mirror.gcr.io/library/debian:trixie, --outputs install,deb:
+  - feasibility, in an amd64 Debian 13 container: every package of the apt-cross lists installs next to the amd64
+    tools (about 700 packages); Akousma configures with the toolchain file and no QT_HOST_PATH (moc, uic, rcc,
+    lrelease, qdbusxml2cpp in build.ninja are the amd64 /usr/lib/qt6/... programs; every library is from
+    /usr/lib/aarch64-linux-gnu); KDSingleApplication 1.1.0 and LayerShellQt 6.3 from Debian, no source build
+  - the first run: image arm64-cross 4 min 38 s (3 min 13 s of apt), CMake 9 s, Akousma 11 min 53 s (894 files,
+    1410 steps, 4 jobs), install folder 1 s, .deb 16 min 55 s (dpkg-buildpackage -a arm64 compiles it all again in
+    its own obj-aarch64-linux-gnu, then dh_dwz / dh_strip); 33 min 50 s in all. For comparison, the emulated arm64
+    build (Ubuntu 24.04 arm64 under qemu) on this machine: 45 min for its image, then 660 of the 1410 steps in 45 min
+    (with other builds running); the cross build passed step 627 after 90 s.
+  - bin/akousma and the .deb's /usr/bin/akousma: "ELF 64-bit LSB pie executable, ARM aarch64"; under qemu-aarch64 in
+    the image, bin/akousma --version prints "Akousma 1.0.0"; the .deb (akousma_1.0.0-trixie_arm64.deb,
+    Architecture: arm64, Depends from dpkg-shlibdeps: libqt6core6t64 (>= 6.8.2), libtag2, libgstreamer1.0-0,
+    libkdsingleapplication-qt6-1.0 (>= 1.1.0), liblayershellqtinterface6, ... plus debian/control's runtime packages)
+    installs with apt in the image, and /usr/bin/akousma --version works the same way
+  - a second run with nothing changed: 2 s. One line changed in src/core/commandlineoptions.cpp, --source <clone>:
+    1 file compiled, 2 link steps in 6 s; the .deb's obj-* build also compiled that file only (2 min 29 s, mostly
+    dh_dwz / dh_strip); the new bin/akousma --version printed the change. The change undone, a normal run: 1 file
+    compiled again, 2 min 33 s with the .deb
+  - the AppImage step with a stand-in for linuxdeploy-x86_64.AppImage (the real one can't be downloaded there): it got
+    QMAKE=aarch64-linux-gnu-qmake6 (-query: /usr/lib/aarch64-linux-gnu/qt6/plugins), ARCH=aarch64, the 53 arm64
+    GStreamer plugins and both helpers, the ldd in front of PATH (arm64 binary: its arm64 libraries; /bin/ls: the
+    system's ldd) and aarch64-linux-gnu-strip
+  - --check-deps, --list, --freeze-deps --dry-run (arm64.cross_compiled=aarch64-linux-gnu on amd64, pkg.<name>:arm64);
+    the amd64 and i386 builds and images unchanged by this (still "skip"; the image recipes are the same);
+    --arm64-mode emulate still takes the Ubuntu arm64 image under qemu and plans a full rebuild (compiler changed)
+  Not run: a real linuxdeploy on the cross AppDir (so no arm64 AppImage was made), --tests in a cross build, a cross
+  build on a Debian or Fedora machine (the container is the same), a Debian 12 base image (KDSingleApplication from
+  source, cross-compiled with the same toolchain file).

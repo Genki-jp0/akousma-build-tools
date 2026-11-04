@@ -124,12 +124,21 @@ KDSingleApplication (v1.2.1, static) from source first, as upstream Strawberry's
 
 for each architecture in `ARCHS`: amd64, i386 and arm64 by default, like the Windows script's x64, x86 and arm64.
 The machine's own architecture is built natively, as above. Each other one is built by the same script inside a
-container (podman, or docker) of a distribution that has the packages for that architecture: the same distribution
-release as the machine when it has an image for it (Ubuntu 24.04 arm64 on Ubuntu 24.04, Fedora 43 aarch64 on Fedora
-43), else Debian 13, the one distribution that still builds Qt 6 for i386. i386 runs on an amd64 machine as it is;
-arm64 runs under qemu-user (binfmt_misc), which is slow (hours for a first build). Each architecture has its own
-folders (`build_x86_64_release`, `build_i686_release`, `build_aarch64_release`, ...); a `.deb` or `.rpm` that an
-architecture's distribution can't make (an i386 `.rpm`: there is no i686 Fedora) is left out with a warning.
+container (podman, or docker):
+
+* i386 on an amd64 machine: a Debian 13 i386 container (the one distribution that still builds Qt 6 for i386); i386
+  programs run on an amd64 kernel as they are.
+* arm64 on an amd64 machine: cross-compiled, as the Windows script does it, in an amd64 Debian 13 container with
+  dpkg multiarch (`crossbuild-essential-arm64`, the libraries as `name:arm64`, Qt's moc/uic/rcc/lrelease for amd64,
+  CMake toolchain `linux/toolchain-aarch64-linux-gnu.cmake`). Everything that runs is amd64, so it is as fast as the
+  amd64 build. `--arm64-mode emulate` (`ARM64_MODE` in the settings) builds it the old way instead: in an arm64
+  container of the machine's distribution under qemu-user, hours for a first build, but it can make an aarch64 `.rpm`.
+* amd64 / i386 on an arm64 machine: a container of that architecture under qemu-user (binfmt_misc), the same
+  distribution release as the machine when it has an image for it, else Debian 13.
+
+Each architecture has its own folders (`build_x86_64_release`, `build_i686_release`, `build_aarch64_release`, ...); a
+`.deb` or `.rpm` that an architecture's distribution can't make (an i386 `.rpm`: there is no i686 Fedora; an arm64
+`.rpm` when it is cross-compiled on Debian) is left out with a warning.
 
 Supported: Debian / Ubuntu (apt), Fedora (dnf), Arch Linux (pacman), openSUSE (zypper); see "Status".
 
@@ -146,12 +155,13 @@ bash 4.4+, git and sudo. Everything else comes from the distribution's packages:
 ./build-akousma.sh --install-deps      # install the missing packages (sudo; the command is shown first)
 ```
 
-For the other architectures: podman (or a working docker) and, for arm64 on an amd64 machine, qemu-user-static.
-`--install-deps` installs both (podman only when no engine works) and registers qemu in binfmt_misc. The build image
-of each architecture (`localhost/akousma-build:<arch>-<base image>`, its packages installed) is made by the first build
-that needs it; `--update-images` makes it again with the newest packages. When something is missing, the script
-builds the architectures it can, then stops with an error naming the others and the fix; `--arch amd64` builds only
-the machine's own architecture.
+For the other architectures: podman (or a working docker). Cross-compiling arm64 needs nothing else; only the emulated
+builds (amd64 / i386 on an arm64 machine, `--arm64-mode emulate`) need qemu-user-static. `--install-deps` installs
+what is needed (podman only when no engine works) and registers qemu in binfmt_misc. The build image of each
+architecture (`localhost/akousma-build:<arch>-<base image>`, `arm64-cross-<base image>` for the cross build, its
+packages installed) is made by the first build that needs it; `--update-images` makes it again with the newest
+packages. When something is missing, the script builds the architectures it can, then stops with an error naming the
+others and the fix; `--arch amd64` builds only the machine's own architecture.
 
 ### Building
 
@@ -159,6 +169,8 @@ the machine's own architecture.
 ./build-akousma.sh                                  # Akousma master for amd64, i386, arm64: install folder + AppImage
 ./build-akousma.sh --arch amd64                     # only amd64, this run (--save-settings: from now on)
 ./build-akousma.sh --arch amd64,i386                # amd64 and i386
+./build-akousma.sh --arch arm64                     # only arm64 (cross-compiled on an amd64 machine)
+./build-akousma.sh --arm64-mode emulate             # arm64 in an emulated arm64 container (slow; e.g. for an .rpm)
 ./build-akousma.sh --deb                            # ... and a .deb (Debian / Ubuntu)
 ./build-akousma.sh --rpm                            # ... and an .rpm (Fedora / openSUSE)
 ./build-akousma.sh --outputs install                # only the install folder
@@ -222,6 +234,8 @@ or VM); for a binary that runs on many distributions, ship the AppImage.
 ### Status
 
 Tested with Akousma master on Ubuntu 24.04 (install folder, AppImage, .deb) and Fedora 43 (install folder, .rpm),
-and the container builds of i386 and arm64 on an Ubuntu 24.04 amd64 machine with docker: see "Tested" in
-linux/BUILD.txt. Arch Linux and openSUSE: the package names are checked against those distributions'
-package databases, but the script has not been run there yet. Please report a package name that doesn't resolve.
+and the container builds of i386 and arm64 on an Ubuntu 24.04 amd64 machine with docker: arm64 cross-compiled from
+scratch in 12 minutes (install folder and `.deb`, `--version` checked under qemu), where the emulated build had
+needed 45 minutes for half of it; see "Tested" in linux/BUILD.txt. Arch Linux and openSUSE: the package names are
+checked against those distributions' package databases, but the script has not been run there yet. Please report a
+package name that doesn't resolve.
