@@ -4,5 +4,5 @@
 /build-settings.linux.conf
 /build-settings.linux.conf.*
 # Work folders, should build-akousma.sh's WORK_ROOT / PROJECT_ROOT point into this repository
-/Atelier/
+/Akousma/
 /data/

@@ -67,7 +67,7 @@ and how each is built, then for each architecture ("==> [2/3] i386: container (d
 packages, the plan ("akousma: build (akousma changed 4a123cf -> 43804f0)", "appimage: skip (unchanged)") and the
 steps. The output of each step goes to <build path>/logs/<step>.log (--verbose shows it too; the build shows its
 progress in 10 % steps). On a failure the end of that log is printed with its path. Everything the script prints is
-also appended to the run log (default ~/Atelier/data/projects/akousma/build_linux.log), the container builds' output
+also appended to the run log (default ~/Akousma/data/projects/akousma/build_linux.log), the container builds' output
 included. At the end: each architecture with ok / FAILED / not built and its time. --dry-run, --list and --check-deps
 write no log.
 
@@ -170,7 +170,7 @@ Folders
 -------
 Defaults (placeholders as in the file; each location may use the ones before it):
 
-  WORK_ROOT       ~/Atelier
+  WORK_ROOT       ~/Akousma
   PROJECT_ROOT    {WORK_ROOT}/data/projects/akousma
   DOWNLOADS_PATH  {PROJECT_ROOT}/linux_/downloads
   SRC_PATH        {DOWNLOADS_PATH}                       git clones: akousma, kdsingleapplication
@@ -182,7 +182,7 @@ Defaults (placeholders as in the file; each location may use the ones before it)
 
 {ARCH} is the architecture being built, by the names AppImages use: x86_64 (amd64), i686 (i386), aarch64 (arm64);
 {BUILD_TYPE} the build type. A location still at its default follows the ones it is made of, so
-WORK_ROOT=/mnt/fast/Atelier moves everything. Downloads, the git clones and the AppImage tools are shared by the
+WORK_ROOT=/mnt/fast/Akousma moves everything. Downloads, the git clones and the AppImage tools are shared by the
 architectures; each has its own build tree (with its packages folder) and install folder. A BUILD_PATH or PREFIX_PATH
 you set without {ARCH} is the machine's own architecture's; the others get _<arch> appended (/mnt/build ->
 /mnt/build_i686) unless the folder name says the architecture already, so they never build into the same folder.
@@ -203,7 +203,7 @@ The install folder (PREFIX_PATH) is emptied and installed again by each build, s
 more don't stay behind; the script only empties it when it made it (marker file .akousma-build-tools; the folder
 itself stays: in a container build it is a mount point). An install
 folder that isn't writable (e.g. --prefix /usr/local) is installed with sudo and not deleted first. To start the
-installed build: ~/Atelier/akousma_linux_x86_64_release/bin/akousma. It uses the distribution's libraries, so it runs
+installed build: ~/Akousma/akousma_linux_x86_64_release/bin/akousma. It uses the distribution's libraries, so it runs
 on this system only. The install folder of a container architecture uses the image's libraries: it runs in that
 image (or a system of the same distribution release and architecture); ship the AppImage or the package instead.
 
