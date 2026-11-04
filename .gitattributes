@@ -1,6 +1,8 @@
 # Akousma: predictable line endings on every platform, whatever core.autocrlf is set to.
 # Text files are stored with LF and checked out with LF; PowerShell reads LF scripts fine.
 * text=auto eol=lf
+# Shell scripts must stay LF even where text=auto would guess wrong: bash can't run a CRLF script.
+*.sh text eol=lf
 
 # The patches are kept byte for byte (no CRLF conversion on Windows checkouts): patches/ (the build tools' own) and
 # local-patches/ (applied by Build-Akousma.ps1). Some patch the CRLF lines of the files they change.

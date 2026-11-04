@@ -8,3 +8,6 @@ git-sourced dependencies' commits, the patch hashes).
 `1.0.0` / `v1.0.0` (or of the commit recorded in the file) uses these versions (`-Deps auto`, the default), and
 `-Deps 1.0.0` uses them for any build. Every other build uses the latest versions. See "Dependency versions" in
 BUILD.txt.
+
+`linux/` holds the release records of the Linux script, `build-akousma.sh` (see `linux/README.md` there);
+Build-Akousma.ps1 doesn't read them.

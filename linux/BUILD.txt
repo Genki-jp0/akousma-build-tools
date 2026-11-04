@@ -1,0 +1,325 @@
+Building Akousma on Linux
+=========================
+
+build-akousma.sh builds Akousma (https://github.com/Genki-jp0/Akousma) with the libraries of your distribution and
+makes an install folder, an AppImage and, on request, a .deb or .rpm. It is the Linux counterpart of
+Build-Akousma.ps1 (Windows, BUILD.txt in the repository root): same idea of settings, folders, change detection,
+--list, --dry-run and release locks, but no dependency is built, so a first build takes minutes, not hours.
+The two scripts share nothing but the repository: each has its own settings file and its own release records.
+
+In the repository root:
+  build-akousma.sh            the script (bash; no other language needed)
+  build-settings.linux.conf   your settings, created on the first run (not in git)
+  versions/linux/             the package versions each Akousma release was built with (--freeze-deps)
+
+
+Requirements
+------------
+bash 4.4 or newer, git, sudo (for --install-deps, and for an install folder that isn't writable), and one of:
+  Debian 12+ / Ubuntu 24.04+      apt
+  Fedora 43+                      dnf
+  Arch Linux                      pacman
+  openSUSE Tumbleweed / Leap 16   zypper
+(the releases Akousma's CI builds). Akousma needs CMake 3.25+ and Qt 6.4+ (CMakeLists.txt); older distributions
+don't have them.
+
+The distribution is read from /etc/os-release (ID, ID_LIKE). Anything else: the script doesn't check packages, but
+still builds when the libraries are there (install them by the lists in the script).
+
+
+Running it
+----------
+From the folder of the script (or anywhere: ./path/to/build-akousma.sh):
+
+  ./build-akousma.sh --check-deps                 which packages are installed / missing; stops
+  ./build-akousma.sh --install-deps               installs the missing ones (sudo), then builds
+  ./build-akousma.sh                              Akousma master: install folder + AppImage
+  ./build-akousma.sh --deb                        ... plus a .deb (apt systems)
+  ./build-akousma.sh --rpm                        ... plus an .rpm (dnf / zypper systems)
+  ./build-akousma.sh --native                     ... plus the package of this distribution (deb or rpm)
+  ./build-akousma.sh --outputs install            only the install folder
+  ./build-akousma.sh --ref v1.0.0                 a branch, tag or commit
+  ./build-akousma.sh --source ~/src/Akousma       a local checkout, as it is (uncommitted changes included)
+  ./build-akousma.sh --build-type debug           debug build, in its own folders
+  ./build-akousma.sh --list                       what would be built and why; builds nothing
+  ./build-akousma.sh --dry-run                    every resolved setting and folder, the source, the packages and the
+                                                  CMake command; changes nothing
+
+Each run prints "Build settings: <file> (read / created with the defaults / saved ...)" first, then the packages, the
+plan ("akousma: build (akousma changed 4a123cf -> 43804f0)", "appimage: skip (unchanged)") and the steps. The output
+of each step goes to <build path>/logs/<step>.log (--verbose shows it too; the build shows its progress in 10 %
+steps). On a failure the end of that log is printed with its path. Everything the script prints is also appended to
+the run log (default ~/Atelier/data/projects/akousma/build_linux.log). --dry-run, --list and --check-deps write no log.
+
+
+Options
+-------
+Akousma source:
+  --repo URL             git URL, default https://github.com/Genki-jp0/Akousma.git. Cloned to <SRC_PATH>/akousma.
+  --ref REF              branch, tag or commit, default master. Each run fetches (git fetch --prune --tags) and then
+                         builds origin/<branch> for a branch, so it always builds the remote's newest commit. (A local
+                         branch of the same name in the clone is never used: it would be stale.) Then a tag, then a
+                         commit id. The clone is checked out detached at that commit; untracked files are removed,
+                         ignored ones (files Akousma's CMake generates in the source tree) are kept.
+  --source DIR           build a local checkout instead. Built out of tree; the checkout is not changed (except the
+                         files Akousma's own CMake writes there: debian/changelog and dist/scripts/maketarball.sh,
+                         both in its .gitignore). Its id for change detection is the commit plus a hash of the
+                         uncommitted changes and untracked files, so editing a file rebuilds (incrementally).
+                         The CMake build folder belongs to one source folder: switching between --source and the git
+                         clone (or another checkout) in the same BUILD_PATH starts it again, a full build. Give a
+                         checkout its own --build-path (and --prefix) to keep both builds incremental.
+  --no-source            back to --repo / --ref (clears a saved AKOUSMA_SOURCE).
+  --release REL          build the commit recorded in versions/linux/REL.txt (see "Release locks").
+
+Build:
+  --build-type TYPE      release (default), debug or relwithdebinfo (CMake Release / Debug / RelWithDebInfo).
+  --jobs N               parallel jobs, default the number of CPUs.
+  --werror, --no-werror  -DBUILD_WERROR=ON / OFF (default OFF: a newer compiler's new warnings don't stop the build).
+                         The .deb always uses ON, as Akousma's debian/rules says; the .rpm too (its spec).
+  --tests, --no-tests    build Akousma's tests (target build_tests) and run them with ctest (QT_QPA_PLATFORM=offscreen,
+                         a temporary HOME). Default off. Also runs them in the .deb / .rpm build.
+  --cmake-arg ARG        an extra CMake argument, repeatable: --cmake-arg -DENABLE_SPOTIFY=OFF. In the settings file:
+                         CMAKE_ARGS=-DA=1 -DB=2 (separated by spaces, no quoting).
+  --clean                delete the CMake build folder first: a full rebuild.
+  --force                build and make every output even when nothing changed.
+
+Outputs (OUTPUTS, default install,appimage):
+  --outputs LIST         comma-separated: install, appimage, deb, rpm, native, none.
+  --deb, --rpm, --native add that package to the outputs (for this run; with --save-settings, OUTPUTS is not
+                         changed by these, use --outputs install,appimage,deb --save-settings).
+  --no-appimage          leave the AppImage out.
+  --update-tools         download linuxdeploy and its plugins again (they are "continuous" builds).
+
+Dependencies:
+  --check-deps           list the packages of the wanted outputs, installed or missing, with the install command.
+                         Exit 1 when something is missing.
+  --install-deps         install the missing packages: shows the command, then runs it with sudo (apt: apt-get update
+                         first). Without it, a run with missing packages stops and prints the command.
+  --yes                  with --install-deps: no questions (apt-get -y, dnf -y, zypper -n, pacman --noconfirm).
+  --freeze-deps REL      write versions/linux/REL.txt after the build (with --dry-run: without building). See
+                         "Release locks".
+
+Folders (see "Folders"):
+  --work-root DIR  --project-root DIR  --downloads-path DIR  --src-path DIR  --build-path DIR  --prefix DIR
+  --output-path DIR  --tools-path DIR  --log-path FILE
+
+Other:
+  --settings FILE        another settings file than build-settings.linux.conf next to the script.
+  --save-settings        write the settings given on this command line into the settings file (paths absolute).
+  --list, --dry-run, --verbose, -h / --help
+
+
+Build settings
+--------------
+build-settings.linux.conf keeps: WORK_ROOT, PROJECT_ROOT, DOWNLOADS_PATH, SRC_PATH, BUILD_PATH, PREFIX_PATH,
+OUTPUT_PATH, TOOLS_PATH, LOG_PATH, AKOUSMA_REPO, AKOUSMA_REF, AKOUSMA_SOURCE, BUILD_TYPE, OUTPUTS, JOBS, WERROR, TESTS,
+CMAKE_ARGS. (Windows' Build-Akousma.ps1 has its own build-settings.json; the two files are independent.)
+The first run creates it with the defaults (with a comment per line). For each setting the command line wins, then
+the file, then the default (a line missing from the file = the default). Command-line options are for that run only;
+--save-settings writes them into the file, keeping your other lines and comments:
+
+  ./build-akousma.sh --ref my-branch                         this run only
+  ./build-akousma.sh --ref my-branch --save-settings         now and from now on
+  ./build-akousma.sh --src-path /mnt/data/src --save-settings --dry-run    save without building
+
+The file is KEY=value, one per line, # for comments, optional quotes around a value. It is parsed, never run (no
+"source"): there is no shell expansion except a leading ~ and the placeholders. Unknown keys are reported and ignored.
+Delete a line or the whole file to get the defaults back.
+
+
+Folders
+-------
+Defaults (placeholders as in the file; each location may use the ones before it):
+
+  WORK_ROOT       ~/Atelier
+  PROJECT_ROOT    {WORK_ROOT}/data/projects/akousma
+  DOWNLOADS_PATH  {PROJECT_ROOT}/linux_/downloads
+  SRC_PATH        {DOWNLOADS_PATH}                       git clones: akousma, kdsingleapplication
+  BUILD_PATH      {PROJECT_ROOT}/linux_/build_{ARCH}_{BUILD_TYPE}
+  PREFIX_PATH     {WORK_ROOT}/akousma_linux_{ARCH}_{BUILD_TYPE}     the install folder
+  OUTPUT_PATH     {BUILD_PATH}/packages                  AppImage, .deb, .rpm
+  TOOLS_PATH      {PROJECT_ROOT}/linux_/tools            linuxdeploy-<arch>.AppImage and its plugins
+  LOG_PATH        {PROJECT_ROOT}/build_linux.log
+
+{ARCH} is uname -m (x86_64, aarch64), {BUILD_TYPE} the build type. A location still at its default follows the ones it
+is made of, so WORK_ROOT=/mnt/fast/Atelier moves everything. To keep the sources on another drive:
+--src-path /mnt/data/akousma/src (and --downloads-path) with --save-settings.
+
+Inside BUILD_PATH:
+  akousma/        the CMake build folder (akousma binary: akousma/akousma)
+  deps/           KDSingleApplication, when it is built from source
+  logs/           one log per step (configure.log, build.log, appimage-linuxdeploy.log, deb-build.log, ...)
+  stamps/         change detection
+  appimage/       AppDir and the staged GStreamer plugins
+  deb/akousma/    the copy of the source dpkg-buildpackage builds in (keeps its obj-* folder between runs)
+  rpmbuild/       rpmbuild's _topdir
+
+The install folder (PREFIX_PATH) is deleted and installed again by each build, so files Akousma doesn't install any
+more don't stay behind; the script only deletes it when it made it (marker file .akousma-build-tools). An install
+folder that isn't writable (e.g. --prefix /usr/local) is installed with sudo and not deleted first. To start the
+installed build: ~/Atelier/akousma_linux_x86_64_release/bin/akousma. It uses the distribution's libraries, so it runs
+on this system only.
+
+
+Packages (dependencies)
+-----------------------
+The package lists are in the script (PKGS[...]), per package manager and group:
+  build      always: compilers, CMake, ninja, Qt 6 (base, private headers, tools, linguist), GStreamer, TagLib, ICU,
+             ... everything Akousma's CMakeLists.txt finds, the optional components included (Akousma's CMake stops
+             when an optional feature that is on by default misses its library, cmake/OptionalComponent.cmake)
+  runtime    always: Qt's SQLite driver and platform plugins, GStreamer base/good (+ ALSA / PulseAudio output)
+  tests      --tests: gtest, gmock
+  deb        a .deb: debhelper, dpkg-dev, fakeroot, lsb-release
+  rpm        an .rpm: rpm-build, the tools the spec's BuildRequires name (desktop-file-utils, appstream-glib, gtest)
+  appimage   an AppImage: curl, patchelf, file, desktop-file-utils, GStreamer bad/ugly/libav (more formats in the
+             AppImage), Qt SVG and Wayland
+Where the names come from (also in the script's comments):
+  apt     Akousma's debian/control and the Ubuntu / Debian jobs of its .github/workflows/build.yaml
+  dnf     the Fedora job of build.yaml and dist/unix/akousma.spec.in
+  zypper  the openSUSE and AppImage jobs of build.yaml and the spec
+  pacman  Arch Linux's strawberry PKGBUILD (1.2.31), plus what Akousma's CMake finds besides
+An entry "a|b" is the first one that exists (libtag-dev on newer Debian/Ubuntu, libtag1-dev on older). Version checks
+(apt): libkdsingleapplication-qt6-dev must be 1.1.0 or newer, else KDSingleApplication is built from source;
+liblayershellqtinterface-dev must be the Qt 6 one (6.x), else it isn't used.
+
+Switched off automatically (shown as "note:"; --cmake-arg can switch them on again):
+  -DENABLE_LAYERSHELLQT=OFF   when LayerShellQt for Qt 6 is not installed, or Qt is older than 6.5 (no
+                              QWaylandApplication). Same rule as Akousma's debian/rules and spec.
+
+KDSingleApplication from source: when the distribution's KDSingleApplication-qt6 is missing or older than 1.1.0
+(Ubuntu 24.04: 1.0.0), the script clones https://github.com/KDAB/KDSingleApplication to <SRC_PATH>/kdsingleapplication,
+builds v1.2.1 as a static library into <BUILD_PATH>/deps and passes it to Akousma (CMAKE_PREFIX_PATH; also to the
+.deb build). Static, as in upstream Strawberry's Ubuntu CI, so nothing extra is needed at run time. Rebuilt when its
+commit or the Qt package version changes.
+
+
+Change detection
+----------------
+<BUILD_PATH>/stamps/build.stamp records what the last successful build was made of:
+  akousma   the Akousma commit (a local checkout: commit + hash of the uncommitted changes)
+  config    the CMake arguments (build type, prefix, Werror, auto and extra args, generator), tests on/off
+  deps      the versions of the build / runtime / tests packages
+When all three are unchanged and the build folder has its akousma binary, the build is skipped ("akousma: skip
+(unchanged ...)"). Otherwise the reasons are printed ("akousma changed 4a123cf -> 43804f0", "settings changed:
+-DBUILD_WERROR=OFF -> -DBUILD_WERROR=ON", "packages changed: qt6-base-dev 6.4.2+dfsg-21.1build5 -> ..."), and CMake
+configures and builds again in the same folder, so only what changed is recompiled. A changed package version
+re-runs CMake too (an updated Qt may need it).
+Each output has its own stamp (stamps/<output>.stamp): it is made again when the build changed, when its file is gone,
+or when its own inputs changed (the install folder path; the AppImage tools; tests for the packages). So adding --deb
+to an unchanged build only makes the .deb.
+  --list     shows this decision for every step, builds nothing
+  --force    builds and makes the outputs anyway (CMake still only recompiles what changed)
+  --clean    deletes the CMake build folder first
+A failed build leaves no stamp, so the next run builds again.
+
+
+AppImage
+--------
+Made with linuxdeploy (https://github.com/linuxdeploy/linuxdeploy), linuxdeploy-plugin-qt and
+linuxdeploy-plugin-gstreamer, downloaded into TOOLS_PATH the first time (--update-tools: again):
+  linuxdeploy-<arch>.AppImage            .../linuxdeploy/releases/download/continuous/
+  linuxdeploy-plugin-qt-<arch>.AppImage  .../linuxdeploy-plugin-qt/releases/download/continuous/
+  linuxdeploy-plugin-gstreamer.sh        raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/master/
+The linuxdeploy AppImage contains the AppImage output plugin and appimagetool. To use other builds of these tools,
+put them into TOOLS_PATH under these names (the script doesn't download a file that is there).
+Steps:
+  1. cmake --install into <BUILD_PATH>/appimage/AppDir/usr (a separate install with prefix /usr inside the AppDir).
+  2. GStreamer: the plugins of upstream Strawberry's AppImage list (build.yaml, build-appimage) that are installed are
+     staged (symlinks) and handed to the gstreamer plugin, which copies them, bundles their libraries, sets their
+     rpath and adds an AppRun hook (GST_PLUGIN_PATH, gst-plugin-scanner). Plugins that aren't installed are listed
+     ("not installed, left out: faac fdkaac ..."); install more GStreamer packages to get them. The distribution's
+     codecs end up in the AppImage: mind their licenses before you publish it.
+  3. linuxdeploy --appdir ... --desktop-file io.github.genki_jp0.Akousma.desktop --icon-file akousma.png
+     --plugin qt --plugin gstreamer --output appimage, with QMAKE=<Qt 6 qmake>, EXTRA_QT_MODULES=svg (when Qt SVG is
+     installed), EXTRA_PLATFORM_PLUGINS=the Wayland platform plugin (when installed), APPIMAGE_EXTRACT_AND_RUN=1 (the
+     tools run without FUSE) and LINUXDEPLOY_OUTPUT_VERSION=<Akousma version>.
+  4. The result goes to OUTPUT_PATH/Akousma-<version>-<arch>.AppImage.
+An AppImage only runs on distributions with a glibc at least as new as the one it was built on: build releases on
+the oldest distribution you want to support.
+
+
+.deb (Debian / Ubuntu)
+----------------------
+Made with Akousma's own debian/ folder, like its CI ("make deb": dpkg-buildpackage -b -d -uc -us -nc):
+  1. The source is copied to <BUILD_PATH>/deb/akousma (git's tracked and untracked-not-ignored files; never built in
+     your checkout). Its obj-<triplet> build folder is kept between runs, so rebuilds are incremental.
+  2. debian/changelog is made from debian/changelog.in (version from Akousma's CMake, the distribution's codename and
+     the date), as Akousma's debian/CMakeLists.txt does.
+  3. DEB_BUILD_OPTIONS="nocheck parallel=N" (without nocheck with --tests) dpkg-buildpackage -b -uc -us -nc -d -jN.
+     -d because the script checked the dependencies itself (Build-Depends names a KDSingleApplication that is built
+     from source on Ubuntu 24.04; CMAKE_PREFIX_PATH points the build at it).
+  4. akousma_<version>-<codename>_<arch>.deb (and the -dbgsym .ddeb) go to OUTPUT_PATH.
+Install it with: sudo apt install ./akousma_<version>-<codename>_amd64.deb
+
+
+.rpm (Fedora / openSUSE)
+------------------------
+Made with Akousma's dist/unix/akousma.spec.in, like its "rpm" CMake target and its CI:
+  1. Akousma's CMake writes <build>/akousma.spec when lsb_release and rpmbuild are installed (the rpm group).
+  2. dist/scripts/maketarball.sh makes akousma-<version>.tar.xz into <BUILD_PATH>/rpmbuild/SOURCES.
+  3. rpmbuild -bb --nocheck (without --nocheck with --tests) --define "_topdir <BUILD_PATH>/rpmbuild".
+  4. The .rpm files go to OUTPUT_PATH.
+Two mistakes in Akousma's spec.in make rpmbuild fail; the script fixes them in its copy of the spec and prints a
+WARNING for each (the fixes belong in Akousma's dist/unix/akousma.spec.in):
+  - %files names *.appdata.xml, but Akousma installs io.github.genki_jp0.Akousma.metainfo.xml ("File not found").
+  - %files has no line for share/akousma (the icon sets, iconsets/*.rcc) ("Installed (but unpackaged) file(s)
+    found"); the script adds %{_datadir}/akousma/.
+The rpm group installs "which" too: maketarball.sh looks for tar with it, and Fedora's container image has no which.
+Install it with: sudo dnf install ./akousma-<version>-1.fc43.x86_64.rpm
+
+
+Release locks (versions/linux/)
+-------------------------------
+Distribution packages can't be pinned: the package manager installs what the distribution ships today, and most
+distributions don't keep old versions. So a release lock records instead of pins:
+
+  ./build-akousma.sh --ref v1.0.0 --freeze-deps 1.0.0             build 1.0.0 and write versions/linux/1.0.0.txt
+  ./build-akousma.sh --ref v1.0.0 --freeze-deps 1.0.0 --dry-run   only write the file (no build)
+  ./build-akousma.sh --ref v1.0.0                                 later: 1.0.0 again
+  ./build-akousma.sh --release 1.0.0                              the same, by the lock's name
+
+versions/linux/<release>.txt (KEY=value) holds akousma_commit, the build tools commit, the date, the distribution
+(ID, VERSION_ID, PRETTY_NAME), the package manager, the arch, build type and CMake arguments, the KDSingleApplication
+tag and commit when it was built from source, the sha256 of the AppImage tools, and pkg.<name>=<version> for every
+dependency package that was installed. An existing file is never replaced (delete it to freeze again). A release with
+uncommitted local changes can't be frozen.
+
+A lock is used when: --release REL; --ref REL or --ref vREL and versions/linux/REL.txt exists; or the commit being
+built is the one a lock records. Then the script
+  - builds the lock's akousma_commit (if the tag points elsewhere now, it warns and still builds the recorded commit),
+  - builds the recorded KDSingleApplication tag (when it comes from source),
+  - warns when the distribution or its version differs from the lock's,
+  - compares every pkg.<name> with what is installed and warns about each difference ("package qt6-base-dev:
+    6.4.2+dfsg-21.1build6 now, 6.4.2+dfsg-21.1build5 in the lock").
+It does not downgrade packages and does not stop. For a build that matches a release exactly, keep a container or VM
+of the distribution release it was frozen on; for binaries that run on many distributions, ship the AppImage.
+
+
+Tested
+------
+On 2026-11-03/04, Akousma master 43804f0, x86_64:
+
+Ubuntu 24.04.5 (container; Qt 6.4.2, GStreamer 1.24.2, GCC 13.3):
+  - --check-deps / --install-deps --yes from a system without the libraries (apt-get update + install, then the
+    check again; a removed package was reinstalled the same way); a run with a package missing stops and prints the
+    install command
+  - KDSingleApplication v1.2.1 built from source (the distribution's 1.0.0 is too old); LayerShellQt switched off
+  - a full build of Akousma (1410 steps), the install folder (bin/akousma --version: "Akousma 1.0.0"), the AppImage
+    and the .deb (built by debian/rules with -DBUILD_WERROR=ON; installed with apt, /usr/bin/akousma --version works)
+  - the AppImage runs under Xvfb (main window up; GStreamer loads only the 53 bundled plugins)
+  - a second run skips everything (3 seconds); --ref <older commit> then master again rebuild 28 of 1410 steps each
+  - a stale local master branch in the clone (one commit behind): the run still built origin/master
+  - --dry-run, --list, --source (change detection with uncommitted changes and untracked files, a build of a local
+    checkout with an uncommitted change, the checkout left as it was), the settings file (creation, command line >
+    file > default, --save-settings keeping the rest of the file, quotes, unknown keys, "$(...)" in a value not run)
+  - --freeze-deps with --dry-run, --release, a lock found by --ref <commit>, a changed package version and a different
+    distribution version reported as warnings, an existing lock not replaced
+  The AppImage tools couldn't be downloaded there (GitHub release downloads were blocked by that network), so
+  linuxdeploy, linuxdeploy-plugin-qt, linuxdeploy-plugin-appimage, appimagetool and the AppImage runtime were built
+  from source and put into TOOLS_PATH under the release file names. The downloads themselves are untested.
+Fedora 43 (chroot of the official container image; Qt 6.10.3, GCC 15.3, KDSingleApplication 1.1.0 and LayerShellQt
+6.7 from the distribution):
+  - --install-deps --yes (every dnf package name resolved), the build, the install folder, the .rpm (with the two spec
+    fixes above; installed with dnf, /usr/bin/akousma --version works), a second run skipping everything
+Not run: Arch Linux and openSUSE (their package names were checked against the official package databases:
+archlinux.org and the Tumbleweed repository metadata), Debian, aarch64, --tests.

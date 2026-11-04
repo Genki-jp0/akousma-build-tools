@@ -1,13 +1,22 @@
-# :hammer_and_wrench: Akousma MSVC Build Tools
+# :hammer_and_wrench: Akousma Build Tools
 
-Build tools for [Akousma](https://github.com/Genki-jp0/Akousma) on Windows with Visual Studio 2022 or 2026.
-`Build-Akousma.ps1` builds every dependency, Akousma itself and the `AkousmaSetup-*.exe` installer in one run, for x64,
-x86 and arm64 (arm64 is cross-compiled on an x64 PC).
+Build tools for [Akousma](https://github.com/Genki-jp0/Akousma) on Windows and Linux:
+
+* Windows: `Build-Akousma.ps1` builds every dependency with Visual Studio 2022 or 2026 (MSVC), Akousma itself and the
+  `AkousmaSetup-*.exe` installer in one run, for x64, x86 and arm64 (arm64 is cross-compiled on an x64 PC).
+* Linux: `build-akousma.sh` builds Akousma with the libraries of your distribution and makes an install folder, an
+  AppImage and, on request, a `.deb` or `.rpm`.
 
 Based on [strawberry-msvc-build-tools](https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools)
 (at d7e0c51) by Jonas Kvinge; Akousma is based on
 [Strawberry Music Player](https://github.com/strawberrymusicplayer/strawberry).
 Licensed under the GPL version 3 (see `COPYING`).
+
+The two scripts are independent: each has its own settings file (`build-settings.json` for Windows,
+`build-settings.linux.conf` for Linux, both next to the scripts and kept out of git) and its own release records
+(`versions/` for Windows, `versions/linux/` for Linux).
+
+## Windows (MSVC)
 
 * `Build-Akousma.ps1`: the build script. `Get-Help .\Build-Akousma.ps1 -Detailed` lists every parameter.
 * `BUILD.txt`: the full guide (tool search, build settings, architectures, parameters, folders, local patches, change
@@ -19,7 +28,7 @@ Licensed under the GPL version 3 (see `COPYING`).
   dependency versions of each Akousma release (`-FreezeDeps`). `CopyDLLDependencies.ps1`: collects the DLLs for the
   installer.
 
-## Requirements
+### Requirements
 
 * [PowerShell 7](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)
 * [Visual Studio 2022 or 2026](https://visualstudio.microsoft.com/vs/) with `Desktop development with C++` (nmake, and
@@ -45,7 +54,7 @@ tar, and stops at the first one that is missing. Keep other GCC / MinGW installa
 
 The script downloads everything else itself: jom, the dependency sources and git clones, and the Akousma source.
 
-## Building
+### Building
 
 In PowerShell 7 (pwsh), from anywhere:
 
@@ -81,7 +90,7 @@ Output, for x64 release with the default folders:
   (x86: `build_x86_release\...-msvc-x86.exe`, arm64: `build_arm64_release\...-msvc-arm64.exe`)
 * the log: `C:\Atelier\data\projects\akousma\build.log` (x86: `build_x86.log`), per package: `<build tree>\logs`
 
-## Settings and folders
+### Settings and folders
 
 `build-settings.json`, next to the script, keeps your settings: the architectures (every one, x64, x86 and arm64, until
 you change it), the build type, the Akousma source and the folders. The first run creates it with the defaults;
@@ -96,3 +105,92 @@ Everything goes under `C:\Atelier` by default (`-WorkRoot E:\` moves it all):
 
 Coming from the older `C:\` or `strawberry` folders, or using upstream's prebuilt dependency packages: see "Folders" in
 BUILD.txt.
+
+## Linux
+
+`build-akousma.sh` builds only Akousma itself. The libraries (Qt 6, GStreamer, TagLib, ...) are the distribution's
+packages; the script checks them and, with `--install-deps`, installs the missing ones. One exception: where the
+distribution's KDSingleApplication is older than Akousma needs (1.1.0; Ubuntu 24.04 has 1.0.0), the script builds
+KDSingleApplication (v1.2.1, static) from source first, as upstream Strawberry's CI does. Outputs, in one run:
+
+* an install folder (`bin/akousma`, `share/...`), runnable as it is
+* an AppImage (linuxdeploy with its Qt and GStreamer plugins, downloaded by the script)
+* a native package on request: `.deb` with Akousma's `debian/` (dpkg-buildpackage), `.rpm` with Akousma's spec
+  (rpmbuild)
+
+Supported: Debian / Ubuntu (apt), Fedora (dnf), Arch Linux (pacman), openSUSE (zypper); see "Status".
+
+* `build-akousma.sh`: the script. `./build-akousma.sh --help` lists every option.
+* `linux/BUILD.txt`: the full guide (options, settings, folders, packages, change detection, outputs, release locks).
+* `versions/linux/`: the package versions each Akousma release was built with (`--freeze-deps`).
+
+### Requirements
+
+bash 4.4+, git and sudo. Everything else comes from the distribution's packages:
+
+```sh
+./build-akousma.sh --check-deps        # what is installed, what is missing (and the command to install it)
+./build-akousma.sh --install-deps      # install the missing packages (sudo; the command is shown first)
+```
+
+### Building
+
+```sh
+./build-akousma.sh                                  # Akousma master: install folder + AppImage
+./build-akousma.sh --deb                            # ... and a .deb (Debian / Ubuntu)
+./build-akousma.sh --rpm                            # ... and an .rpm (Fedora / openSUSE)
+./build-akousma.sh --outputs install                # only the install folder
+./build-akousma.sh --ref v1.0.0                     # a branch, tag or commit
+./build-akousma.sh --source ~/src/Akousma           # a local checkout, uncommitted changes included
+./build-akousma.sh --build-type debug               # debug build (its own folders)
+./build-akousma.sh --list                           # what would be built and why; builds nothing
+./build-akousma.sh --dry-run                        # settings, folders, source, packages, steps; changes nothing
+```
+
+A branch is built at `origin/<branch>` right after a fetch, never at a stale local branch. A second run with nothing
+changed (same Akousma commit, settings and package versions) skips the build and the outputs; otherwise CMake rebuilds
+only what changed. `--force` builds anyway, `--clean` starts the CMake build folder again.
+
+Output, release build with the default folders (`~/Atelier`):
+
+* `~/Atelier/akousma_linux_x86_64_release/bin/akousma`: the install folder
+* `~/Atelier/data/projects/akousma/linux_/build_x86_64_release/packages/`: `Akousma-<version>-x86_64.AppImage`,
+  `akousma_<version>-<codename>_amd64.deb`, `akousma-<version>-1.<dist>.x86_64.rpm`
+* the log: `~/Atelier/data/projects/akousma/build_linux.log`, per step: `<build folder>/logs`
+
+### Settings and folders
+
+`build-settings.linux.conf`, next to the script, keeps your settings (folders, Akousma source, build type, outputs,
+...). The first run creates it with the defaults; `.gitignore` keeps it out of git. It is a plain `KEY=value` file
+that the script reads (it is never run). An option on the command line wins for that run; add `--save-settings` to
+write it into the file:
+
+```sh
+./build-akousma.sh --src-path /mnt/data/akousma/src --save-settings --dry-run   # save without building
+```
+
+Everything goes under `~/Atelier` by default (`--work-root` moves it all). The git clones (`--src-path`) and the
+downloads (`--downloads-path`) can be put elsewhere, e.g. on another drive.
+
+### Dependency versions and releases
+
+The dependencies are the distribution's packages, so they can't be pinned the way `Build-Akousma.ps1` pins its
+dependencies: `apt`/`dnf`/`pacman`/`zypper` install what the distribution currently ships, and old versions are
+usually not available any more. What the script can do is record and compare:
+
+```sh
+./build-akousma.sh --ref v1.0.0 --freeze-deps 1.0.0   # build 1.0.0, write versions/linux/1.0.0.txt; commit it
+./build-akousma.sh --ref v1.0.0                       # later: builds the recorded commit, warns about each package
+./build-akousma.sh --release 1.0.0                    #   whose version differs from the record
+```
+
+`versions/linux/<release>.txt` records the Akousma commit, the distribution and its version, and the installed
+version of each dependency package (and the KDSingleApplication tag when it is built from source: that one is pinned).
+For a build that really matches a release, use the same distribution release and keep its packages (e.g. a container
+or VM); for a binary that runs on many distributions, ship the AppImage.
+
+### Status
+
+Tested with Akousma master on Ubuntu 24.04 (install folder, AppImage, .deb) and Fedora 43 (install folder, .rpm):
+see "Tested" in linux/BUILD.txt. Arch Linux and openSUSE: the package names are checked against those distributions'
+package databases, but the script has not been run there yet. Please report a package name that doesn't resolve.

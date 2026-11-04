@@ -2,7 +2,7 @@ Building Akousma for Windows (MSVC)
 ===================================
 
 This repository is upstream strawberry-msvc-build-tools @ d7e0c51 (2026-10-30 "Update glib_networking") with one build
-script for Akousma:
+script for Akousma on Windows:
 
   Build-Akousma.ps1         the build script. It prepares the build environment and builds the dependencies, Akousma
                             and the AkousmaSetup installer, in one run. It replaces both StrawberryMSVCBuild.ps1 (the
@@ -15,6 +15,9 @@ script for Akousma:
   StrawberryPackageVersions.txt
                             the pinned dependency versions: upstream's file (name kept) at d7e0c51, plus libcdio
   versions\                 the dependency versions of each Akousma release (1.0.0.txt, ...; see "Dependency versions")
+
+Linux: build-akousma.sh, described in linux\BUILD.txt. It has its own settings file (build-settings.linux.conf) and
+release records (versions\linux\); Build-Akousma.ps1 doesn't read them.
 
 Akousma itself is NOT patched here any more. Its changes (album art, analyzer framerate, moodbar, playlist lock,
 tabbar background, window backdrop, branding, the Akousma names, the import from Strawberry / Clementine) are commits
