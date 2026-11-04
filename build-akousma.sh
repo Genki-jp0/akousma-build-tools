@@ -7,7 +7,9 @@
 #
 # Architectures: amd64, i386 and arm64 by default (ARCHS). This machine's one is built natively; each other one is
 # built by this same script inside a container (podman or docker) of a distribution that has the packages for it:
-# i386 on an amd64 machine without emulation, arm64 (or amd64 on an arm64 machine) with qemu-user via binfmt_misc.
+# i386 on an amd64 machine without emulation; arm64 on an amd64 machine cross-compiled (an amd64 Debian container with
+# the arm64 packages, dpkg multiarch: native speed), or with ARM64_MODE=emulate in an arm64 container under qemu-user;
+# amd64 / i386 on an arm64 machine under qemu-user via binfmt_misc.
 #
 # ./build-akousma.sh --help lists the options; linux/BUILD.txt describes them.
 #
@@ -52,10 +54,16 @@ declare -A ARCH_DIR=([amd64]=x86_64 [i386]=i686 [arm64]=aarch64)
 declare -A ARCH_TOOL=([amd64]=x86_64 [i386]=i386 [arm64]=aarch64)
 declare -A ARCH_PLATFORM=([amd64]=linux/amd64 [i386]=linux/386 [arm64]=linux/arm64)
 declare -A ARCH_QEMU=([amd64]=x86_64 [i386]=i386 [arm64]=aarch64)
+declare -A ARCH_TRIPLET=([amd64]=x86_64-linux-gnu [i386]=i386-linux-gnu [arm64]=aarch64-linux-gnu)
+# For a cross build's AppImage: the machine name "file" prints for a program, and the dynamic loader.
+declare -A ARCH_FILE_NAME=([amd64]=x86-64 [i386]="Intel 80386" [arm64]=aarch64)
+declare -A ARCH_LOADER=([amd64]=/lib64/ld-linux-x86-64.so.2 [i386]=/lib/ld-linux.so.2 [arm64]=/lib/ld-linux-aarch64.so.1)
 
 # Container images of the other architectures: localhost/akousma-build:<arch>-<base image>, made from the base image
 # by this script (--image-setup installs every package group). Raise IMAGE_RECIPE when that changes; an image is made
 # again when its recipe (this number, the base image and the package lists) changes, or with --update-images.
+# arm64 cross-compiled on amd64 has its own image, localhost/akousma-build:arm64-cross-<base image> (an amd64 Debian
+# with "dpkg --add-architecture arm64" and the apt-cross package lists).
 readonly IMAGE_RECIPE=1
 readonly IMAGE_REPO="localhost/akousma-build"
 # The fallback base image: Debian 13 still builds Qt 6 (6.8) and every other package Akousma needs for i386, amd64 and
@@ -125,6 +133,27 @@ libmtp chromaprint fftw libebur128 sparsehash libx11 gdk-pixbuf2"
 PKGS[pacman:runtime]="gst-plugins-base gst-plugins-good"
 PKGS[pacman:tests]="gtest"
 PKGS[pacman:appimage]="curl patchelf file desktop-file-utils gst-plugins-bad gst-plugins-ugly gst-libav qt6-svg qt6-wayland"
+
+# arm64 cross-compiled on amd64 (ARM64_MODE=cross), in an amd64 Debian container with dpkg multiarch: the packages
+# Akousma links with and the ones its install folder / AppImage carry are the arm64 ones (name:arm64), the programs
+# that run during the build are amd64: the cross compiler, CMake, ninja, and Qt's moc, uic, rcc, lrelease
+# (qt6-base-dev-tools, qt6-tools-dev-tools and qt6-l10n-tools are Multi-Arch: foreign; their arm64 CMake packages name
+# them). pkgconf:arm64 brings aarch64-linux-gnu-pkg-config; qemu-user-static runs arm64 programs where one has to run
+# (CMake's try_run and the tests, ldd for the AppImage). The same packages as the apt lists above, checked 2026-11 to
+# install side by side in Debian 13 (trixie).
+PKGS[apt-cross:build]="build-essential crossbuild-essential-arm64 qemu-user-static git cmake ninja-build
+qt6-base-dev-tools qt6-tools-dev-tools qt6-l10n-tools pkgconf:arm64 libglib2.0-dev:arm64 libssl-dev:arm64
+libsqlite3-dev:arm64 libasound2-dev:arm64 libpulse-dev:arm64 libsecret-1-dev:arm64 libtag-dev:arm64|libtag1-dev:arm64
+libicu-dev:arm64 libuchardet-dev:arm64 libxkbcommon-dev:arm64 qt6-base-dev:arm64 qt6-base-private-dev:arm64
+qt6-tools-dev:arm64 libkdsingleapplication-qt6-dev:arm64>=1.1.0:kdsa liblayershellqtinterface-dev:arm64>=6:skip
+libwayland-dev:arm64 libgstreamer1.0-dev:arm64 libgstreamer-plugins-base1.0-dev:arm64 libcdio-dev:arm64
+libgpod-dev:arm64 libmtp-dev:arm64 libchromaprint-dev:arm64 libfftw3-dev:arm64 libebur128-dev:arm64 libsparsehash-dev"
+PKGS[apt-cross:runtime]="libqt6sql6-sqlite:arm64 qt6-qpa-plugins:arm64 gstreamer1.0-plugins-base:arm64
+gstreamer1.0-plugins-good:arm64 gstreamer1.0-alsa:arm64 gstreamer1.0-pulseaudio:arm64"
+PKGS[apt-cross:tests]="libgtest-dev:arm64 libgmock-dev:arm64"
+PKGS[apt-cross:deb]="debhelper dpkg-dev fakeroot lsb-release"
+PKGS[apt-cross:appimage]="curl patchelf file desktop-file-utils gstreamer1.0-plugins-bad:arm64
+gstreamer1.0-plugins-ugly:arm64 gstreamer1.0-libav:arm64 libqt6svg6:arm64 qt6-wayland:arm64"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Output helpers
@@ -199,13 +228,18 @@ the script (created on the first run; an option on the command line wins for tha
 
 Architectures (default amd64,i386,arm64):
   --arch LIST             comma-separated: amd64, i386, arm64 (also x86_64, i686, aarch64). This machine's one is built
-                          natively, the others in a container (podman or docker; arm64 on amd64 also needs qemu-user).
+                          natively, the others in a container (podman or docker; arm64 on amd64 is cross-compiled
+                          there, see --arm64-mode).
                           One that can't be built doesn't stop the others; the run then ends with an error.
   --container-engine E    podman, docker or auto (default: podman if it works, else docker)
   --container-image A=IMG base image for architecture A, repeatable (default: this distribution's release where it
-                          has an image for A, else docker.io/library/debian:trixie)
+                          has an image for A, else docker.io/library/debian:trixie; always that for i386 on amd64
+                          and for arm64 cross-compiled)
   --container-arg ARG     extra argument for "<engine> run", repeatable
   --update-images         pull the base images and make the build images again (newest packages)
+  --arm64-mode MODE       arm64 on an amd64 machine: cross (default; cross-compiled at native speed in an amd64
+                          Debian 13 container with the arm64 packages) or emulate (an arm64 container of this
+                          distribution under qemu-user: hours for a first build, but an .rpm on Fedora / openSUSE)
 
 Akousma source:
   --repo URL              git URL (default https://github.com/Genki-jp0/Akousma.git), cloned to <src path>/akousma
@@ -266,7 +300,7 @@ EOF
 # ---------------------------------------------------------------------------------------------------------------------
 readonly SETTING_KEYS=(ARCHS WORK_ROOT PROJECT_ROOT DOWNLOADS_PATH SRC_PATH BUILD_PATH PREFIX_PATH OUTPUT_PATH TOOLS_PATH
   LOG_PATH AKOUSMA_REPO AKOUSMA_REF AKOUSMA_SOURCE BUILD_TYPE OUTPUTS JOBS WERROR TESTS CMAKE_ARGS CONTAINER_ENGINE
-  CONTAINER_IMAGES CONTAINER_ARGS)
+  CONTAINER_IMAGES CONTAINER_ARGS ARM64_MODE)
 # shellcheck disable=SC2088 # "~" is kept in the file and expanded by expand_home
 declare -A DEFAULTS=(
   [ARCHS]="$DEFAULT_ARCHS"
@@ -291,6 +325,7 @@ declare -A DEFAULTS=(
   [CONTAINER_ENGINE]="auto"
   [CONTAINER_IMAGES]=""
   [CONTAINER_ARGS]=""
+  [ARM64_MODE]="cross"
 )
 declare -A SETTING_COMMENTS=(
   [ARCHS]="Architectures, comma-separated: amd64, i386, arm64 (this machine's natively, the others in a container)"
@@ -315,6 +350,7 @@ declare -A SETTING_COMMENTS=(
   [CONTAINER_ENGINE]="Runs the other architectures' builds: podman, docker or auto (podman if it works, else docker)"
   [CONTAINER_IMAGES]="Base image per architecture, e.g. arm64=docker.io/library/debian:trixie (empty: see linux/BUILD.txt)"
   [CONTAINER_ARGS]="Extra arguments for '<engine> run', separated by spaces (no quoting)"
+  [ARM64_MODE]="arm64 on an amd64 machine: cross (cross-compiled in an amd64 Debian container) or emulate (arm64 container, qemu-user)"
 )
 declare -A CLI=()     # settings given on the command line
 declare -A FILESET=() # settings read from the file
@@ -466,7 +502,7 @@ parse_args() {
     case "$opt" in
       --repo|--ref|--source|--release|--build-type|--jobs|--cmake-arg|--outputs|--freeze-deps|--settings|\
       --work-root|--project-root|--downloads-path|--src-path|--build-path|--prefix|--output-path|--tools-path|--log-path|\
-      --arch|--container-engine|--container-image|--container-arg|--arch-build|--host-arch|--pinned-commit)
+      --arch|--container-engine|--container-image|--container-arg|--arm64-mode|--arch-build|--host-arch|--pinned-commit)
         (( $# >= 2 )) || die "${opt} needs a value"
         val="$2"; hasval=1; shift 2 ;;
       *) shift ;;
@@ -479,6 +515,7 @@ parse_args() {
         opt="$(canonical_arch "${val%%=*}")" || die "--container-image: unknown architecture '${val%%=*}'"
         CLI_CONTAINER_IMAGES+=("${opt}=${val#*=}"); opt=--container-image ;;
       --container-arg) CLI_CONTAINER_ARGS+=("$val") ;;
+      --arm64-mode) set_cli ARM64_MODE "${val,,}" ;;
       --update-images) OPT_UPDATE_IMAGES=1; fwd=0 ;;
       --arch-build) ARCH_BUILD="$(canonical_arch "$val")" || die "--arch-build: unknown architecture '${val}'"; fwd=0 ;;
       --host-arch) HOST_ARCH_OPT="$val"; fwd=0 ;;
@@ -555,6 +592,8 @@ resolve_settings() {
   for k in WERROR TESTS; do
     case "${S[$k]^^}" in ON|1|YES|TRUE) S[$k]=ON ;; OFF|0|NO|FALSE|"") S[$k]=OFF ;; *) die "${k} must be ON or OFF" ;; esac
   done
+  S[ARM64_MODE]="${S[ARM64_MODE],,}"
+  case "${S[ARM64_MODE]}" in cross|emulate) ;; *) die "ARM64_MODE must be cross or emulate (is '${S[ARM64_MODE]}')" ;; esac
   if [[ -z "${S[JOBS]}" ]]; then S[JOBS]="$(nproc 2>/dev/null || echo 2)"; fi
   [[ "${S[JOBS]}" =~ ^[0-9]+$ ]] || die "JOBS must be a number"
   # Locations, in order: each one may use the ones before it.
@@ -574,6 +613,15 @@ resolve_settings() {
   STAMP_DIR="${S[BUILD_PATH]}/stamps"
   CMAKE_BUILD_DIR="${S[BUILD_PATH]}/akousma"
   DEPS_PREFIX="${S[BUILD_PATH]}/deps"
+  # Cross-compiled (arm64 on amd64): the toolchain file, the cross compiler and pkg-config of the target; the AppImage
+  # tools are this machine's (they handle arm64 files, see make_appimage).
+  CROSS=0 CROSS_TRIPLET="" CROSS_CXX="" CROSS_CMAKE_ARGS=() PKGCONF=pkg-config
+  if [[ "$(arch_how "$ARCH_NAME")" == cross ]]; then
+    CROSS=1 CROSS_TRIPLET="${ARCH_TRIPLET[$ARCH_NAME]}"
+    CROSS_CXX="${CROSS_TRIPLET}-g++" PKGCONF="${CROSS_TRIPLET}-pkg-config"
+    CROSS_CMAKE_ARGS=(-DCMAKE_TOOLCHAIN_FILE="${SCRIPT_DIR}/linux/toolchain-${CROSS_TRIPLET}.cmake")
+    TOOL_ARCH="${ARCH_TOOL[$HOST_ARCH]}"
+  fi
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -610,6 +658,9 @@ detect_distro() {
     dnf|zypper) NATIVE_PKG=rpm ;;
     *) NATIVE_PKG="" ;;
   esac
+  # The package lists: apt-cross for a cross-compiled architecture (its libraries as name:arm64).
+  PKG_SET="$PM"
+  if [[ "${CROSS:-0}" == 1 && "$PM" == apt ]]; then PKG_SET=apt-cross; fi
 }
 
 # "native" is the package format of the distribution the architecture is built on (in a container: the image's). A
@@ -637,7 +688,8 @@ resolve_outputs() {
   OUTPUTS=()
   for o in "${out[@]}"; do
     if [[ "$o" == deb && "$PM" != apt ]] || [[ "$o" == rpm && "$PM" != dnf && "$PM" != zypper ]]; then
-      warn "${ARCH_NAME}: no .${o} (.deb packages are made on Debian / Ubuntu, .rpm on Fedora / openSUSE; ${ARCH_NAME} is built on ${DISTRO_NAME})"
+      local how=""; [[ "$CROSS" == 1 ]] && how=", cross-compiled (--arm64-mode emulate builds it in a container of this machine's distribution)"
+      warn "${ARCH_NAME}: no .${o} (.deb packages are made on Debian / Ubuntu, .rpm on Fedora / openSUSE; ${ARCH_NAME} is built on ${DISTRO_NAME}${how})"
       SKIPPED_OUTPUTS+=("$o"); continue
     fi
     OUTPUTS+=("$o")
@@ -648,7 +700,7 @@ has_output() { [[ " ${OUTPUTS[*]} " == *" $1 "* ]]; }
 
 pkg_group() { # $1 = group: prints the entries of that group for this package manager
   # shellcheck disable=SC2086 # the lists are split into words on purpose
-  printf '%s\n' ${PKGS[${PM}:${1}]:-}
+  printf '%s\n' ${PKGS[${PKG_SET}:${1}]:-}
 }
 
 wanted_groups() {
@@ -732,11 +784,11 @@ resolve_packages() {
   return 0
 }
 
-# The version of an installed CMake package (from <name>ConfigVersion.cmake), or nothing.
+# The version of an installed CMake package (from <name>ConfigVersion.cmake), or nothing. Cross-compiled: the target's.
 cmake_package_version() {
   local d f
-  for d in /usr/lib/cmake /usr/lib64/cmake /usr/lib/*-linux-gnu*/cmake /usr/local/lib/cmake /usr/local/lib64/cmake \
-           /usr/share/cmake; do
+  for d in ${CROSS_TRIPLET:+"/usr/lib/${CROSS_TRIPLET}/cmake"} /usr/lib/cmake /usr/lib64/cmake /usr/lib/*-linux-gnu*/cmake \
+           /usr/local/lib/cmake /usr/local/lib64/cmake /usr/share/cmake; do
     for f in "${d}/${1}/${1}ConfigVersion.cmake" "${d}/${1}/${1}-config-version.cmake"; do
       if [[ -f "$f" ]]; then sed -n 's/^ *set(PACKAGE_VERSION "\([^"]*\)").*/\1/p' "$f" | head -n1; return 0; fi
     done
@@ -747,7 +799,7 @@ kdsa_system_version() { cmake_package_version KDSingleApplication-qt6; }
 
 qt_version() {
   local v q
-  v="$(pkg-config --modversion Qt6Core 2>/dev/null || true)"
+  v="$("$PKGCONF" --modversion Qt6Core 2>/dev/null || true)"
   if [[ -z "$v" ]] && q="$(find_qmake)"; then v="$("$q" -query QT_VERSION 2>/dev/null || true)"; fi
   printf '%s' "$v"
 }
@@ -959,6 +1011,7 @@ write_lock_part() {
     printf 'distro_name=%s\n' "$DISTRO_NAME"
     printf 'package_manager=%s\n' "$PM"
     printf 'arch=%s\n' "$ARCH_NAME"
+    [[ "$CROSS" == 1 ]] && printf 'cross_compiled=%s on %s\n' "$CROSS_TRIPLET" "$HOST_ARCH"
     printf 'build_type=%s\n' "${S[BUILD_TYPE]}"
     printf 'cmake_args=%s\n' "${S[CMAKE_ARGS]}"
     if [[ "$KDSA_FROM_SOURCE" == 1 ]]; then printf 'kdsingleapplication_ref=%s\n' "$KDSA_REF"; fi
@@ -1172,7 +1225,7 @@ build_kdsa() {
   rm -rf "$bdir"
   # Static, as upstream Strawberry's CI does it on Ubuntu 24.04, so neither the install folder nor the packages
   # need a KDSingleApplication library at run time.
-  run_logged kdsa-configure cmake -S "$src" -B "$bdir" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release \
+  run_logged kdsa-configure cmake -S "$src" -B "$bdir" "${GENERATOR_ARGS[@]}" "${CROSS_CMAKE_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DKDSingleApplication_QT6=ON -DKDSingleApplication_STATIC=ON \
     -DBUILD_SHARED_LIBS=OFF -DKDSingleApplication_EXAMPLES=OFF -DKDSingleApplication_TESTS=OFF \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
@@ -1200,6 +1253,8 @@ compute_config() {
   CONFIGURE_ARGS=(-DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" -DCMAKE_INSTALL_PREFIX="${S[PREFIX_PATH]}"
     -DBUILD_WERROR="${S[WERROR]}")
   [[ "$KDSA_FROM_SOURCE" == 1 ]] && CONFIGURE_ARGS+=(-DCMAKE_PREFIX_PATH="$DEPS_PREFIX")
+  # (Only cross-compiled builds have this, so the settings of the others are unchanged.)
+  CONFIGURE_ARGS=("${CROSS_CMAKE_ARGS[@]}" "${CONFIGURE_ARGS[@]}")
   auto_cmake_args
   CONFIGURE_ARGS+=("${AUTO_CMAKE_ARGS[@]}" "${CMAKE_ARGS_ARR[@]}")
   CONFIG_TEXT="source=${AKOUSMA_SRC} generator=${GENERATOR} $(printf '%s ' "${CONFIGURE_ARGS[@]}")tests=${S[TESTS]} kdsa=${KDSA_FROM_SOURCE}:${KDSA_REF}"
@@ -1211,7 +1266,8 @@ compute_config() {
 }
 
 # The C++ compiler (its first --version line): a new one starts the build folder again, as ninja doesn't track it.
-compiler_id() { "${CXX:-c++}" --version 2>/dev/null | head -n1 || true; }
+# Cross-compiled: the cross compiler (so a switch between --arm64-mode cross and emulate starts it again too).
+compiler_id() { "${CROSS_CXX:-${CXX:-c++}}" --version 2>/dev/null | head -n1 || true; }
 
 # Decides what to do. BUILD_NEEDED=1/0 with BUILD_REASONS; per output: OUT_NEEDED[o] and OUT_REASON[o]. A build is
 # incremental (the CMake build folder is kept, ninja recompiles what changed) unless CLEAN_NEEDED=1: --clean, or another
@@ -1333,6 +1389,10 @@ check_tools() {
   for t in git cmake pkg-config; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
   command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1 || missing+=("a C++ compiler")
   (( ${#missing[@]} == 0 )) || die "Missing: ${missing[*]} (--install-deps installs them)"
+  if [[ "$CROSS" == 1 ]]; then
+    for t in "$CROSS_CXX" "$PKGCONF"; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+    (( ${#missing[@]} == 0 )) || die "Missing: ${missing[*]} (the cross build image has them; --update-images makes it again)"
+  fi
   local v; v="$(cmake --version | sed -n 's/^cmake version \([0-9.]*\).*/\1/p')"
   version_ge "$v" 3.25 || die "CMake ${v} is too old: Akousma needs 3.25 or newer (CMakeLists.txt cmake_minimum_required)"
 }
@@ -1410,8 +1470,9 @@ make_install() {
   output_wanted install || { step "Install folder: unchanged (${p})"; return 0; }
   step "Install folder ${p}"
   # A fresh copy each time, so files Akousma no longer installs don't stay behind; only in a folder this script made.
+  # Its contents, not the folder: in a container build it is a mount point, which can't be removed.
   if [[ -d "$p" ]]; then
-    if [[ -f "$marker" ]]; then rm -rf "$p"
+    if [[ -f "$marker" ]]; then find "$p" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
     elif [[ -n "$(ls -A "$p" 2>/dev/null)" ]]; then warn "${p} is not empty and was not made by ${SCRIPT_NAME}: installing over it"
     fi
   fi
@@ -1447,9 +1508,10 @@ ensure_appimage_tools() {
   done
 }
 
-find_qmake() {
+find_qmake() { # cross-compiled: Debian's <triplet>-qmake6 (this machine's qmake, -query gives the target's paths)
   local c
-  for c in qmake6 qmake-qt6 /usr/lib/qt6/bin/qmake /usr/lib64/qt6/bin/qmake /usr/lib/*-linux-gnu/qt6/bin/qmake qmake; do
+  for c in ${CROSS_TRIPLET:+"${CROSS_TRIPLET}-qmake6"} qmake6 qmake-qt6 /usr/lib/qt6/bin/qmake /usr/lib64/qt6/bin/qmake \
+           /usr/lib/*-linux-gnu/qt6/bin/qmake qmake; do
     if command -v "$c" >/dev/null 2>&1 && [[ "$("$c" -query QT_VERSION 2>/dev/null)" == 6.* ]]; then command -v "$c"; return 0; fi
   done
   return 1
@@ -1469,8 +1531,8 @@ make_appimage() {
 
   # GStreamer: only the plugins on the list (upstream's), plus the plugin scanner.
   local pdir sdir staged="${work}/gst-plugins" helpers="${work}/gst-helpers" p missing=() n=0
-  pdir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
-  sdir="$(pkg-config --variable=pluginscannerdir gstreamer-1.0 2>/dev/null || true)"
+  pdir="$("$PKGCONF" --variable=pluginsdir gstreamer-1.0)"
+  sdir="$("$PKGCONF" --variable=pluginscannerdir gstreamer-1.0 2>/dev/null || true)"
   mkdir -p "$staged" "$helpers"
   # shellcheck disable=SC2086 # a list of names
   for p in $GST_PLUGINS; do
@@ -1498,9 +1560,33 @@ make_appimage() {
   compgen -G "$(dirname "$("$qmake" -query QT_INSTALL_LIBS)/x")/libQt6Svg.so*" >/dev/null && extra_modules="svg"
 
   mkdir -p "${work}/out"
+  # Cross-compiled: this machine's linuxdeploy (TOOL_ARCH) deploys the arm64 AppDir. It reads ELF files itself and
+  # asks "ldd" for their libraries and "strip" to strip them: in front of PATH, an ldd that lists an arm64 file's
+  # libraries with the arm64 dynamic loader under qemu-user, and the cross strip. ARCH tells appimagetool to put the
+  # arm64 AppImage runtime in front.
+  local bin_path="$t"
+  if [[ "$CROSS" == 1 ]]; then
+    local shim="${work}/cross-bin" qemu
+    qemu="$(command -v "qemu-${ARCH_QEMU[$ARCH_NAME]}-static" || command -v "qemu-${ARCH_QEMU[$ARCH_NAME]}")" \
+      || die "qemu-${ARCH_QEMU[$ARCH_NAME]} is missing (the cross build image has it; --update-images makes it again)"
+    mkdir -p "$shim"
+    ln -sf "$(command -v "${CROSS_TRIPLET}-strip")" "${shim}/strip"
+    cat > "${shim}/ldd" <<EOF
+#!/bin/sh
+# ldd for linuxdeploy in a cross build (written by ${SCRIPT_NAME}): ${ARCH_NAME} files through their dynamic loader under
+# qemu-user, anything else through the system's ldd.
+for f; do :; done
+case "\$(file -bL "\$f" 2>/dev/null)" in
+  *ELF*${ARCH_FILE_NAME[$ARCH_NAME]}*) exec "${qemu}" "${ARCH_LOADER[$ARCH_NAME]}" --list "\$f" ;;
+  *) exec /usr/bin/ldd "\$@" ;;
+esac
+EOF
+    chmod +x "${shim}/ldd"
+    bin_path="${shim}:${t}"
+  fi
   # APPIMAGE_EXTRACT_AND_RUN: the tools run without FUSE (containers, systems without libfuse2).
   run_logged appimage-linuxdeploy env -C "${work}/out" \
-    PATH="${t}:${PATH}" APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$a" QMAKE="$qmake" \
+    PATH="${bin_path}:${PATH}" APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$a" QMAKE="$qmake" \
     EXTRA_PLATFORM_PLUGINS="$(IFS=';'; printf '%s' "${extra_platform[*]}")" EXTRA_QT_MODULES="$extra_modules" \
     GSTREAMER_PLUGINS_DIR="$staged" GSTREAMER_HELPERS_DIR="$helpers" \
     LINUXDEPLOY_OUTPUT_VERSION="$ver" \
@@ -1538,6 +1624,13 @@ make_deb() {
   local work="${S[BUILD_PATH]}/deb" tree ver codename
   tree="${work}/akousma"
   rm -f "${work}"/*.deb "${work}"/*.ddeb "${work}"/*.buildinfo "${work}"/*.changes
+  # Its obj-* build folder is kept, but not across a compiler change (e.g. --arm64-mode emulate -> cross): the same
+  # rule as the CMake build folder.
+  local tc="${work}/obj.toolchain"
+  if [[ -f "$tc" && "$(cat "$tc")" != "$TOOLCHAIN" ]]; then
+    info "The compiler changed since the last .deb build: starting its build folder again"
+    rm -rf "${tree}"/obj-*
+  fi
   copy_source_tree "$AKOUSMA_SRC" "$tree"
   # debian/changelog: what Akousma's debian/CMakeLists.txt makes from changelog.in at configure time.
   ver="$(akousma_version)"
@@ -1548,8 +1641,15 @@ make_deb() {
   local opts="parallel=${S[JOBS]}"; [[ "${S[TESTS]}" == ON ]] || opts="nocheck ${opts}"
   local envs=(DEB_BUILD_OPTIONS="$opts")
   [[ "$KDSA_FROM_SOURCE" == 1 ]] && envs+=(CMAKE_PREFIX_PATH="$DEPS_PREFIX")
+  # Cross-compiled: dpkg-buildpackage -a <arch>; debhelper then passes the cross compiler, pkg-config and
+  # CMAKE_SYSTEM_PROCESSOR to CMake itself, dpkg-shlibdeps reads the arm64 packages' symbols files, dh_strip uses the
+  # cross strip: nothing of the target has to run.
+  # (CC / CXX: the cross compilers debhelper uses anyway; dpkg-architecture warns without them.)
+  local host=()
+  if [[ "$CROSS" == 1 ]]; then host=(-a "$ARCH_NAME"); envs+=(CC="${CROSS_TRIPLET}-gcc" CXX="$CROSS_CXX"); fi
   # -d: the dependencies were checked above (Build-Depends names a KDSingleApplication that may come from source here).
-  progress deb-build env -C "$tree" "${envs[@]}" dpkg-buildpackage -b -uc -us -nc -d -j"${S[JOBS]}"
+  mkdir -p "$work"; printf '%s' "$TOOLCHAIN" > "$tc"
+  progress deb-build env -C "$tree" "${envs[@]}" dpkg-buildpackage "${host[@]}" -b -uc -us -nc -d -j"${S[JOBS]}"
   mkdir -p "${S[OUTPUT_PATH]}"
   local f made=()
   # The package itself first (its stamp and the summary name it), then -dbgsym (.ddeb on Ubuntu, .deb on Debian).
@@ -1668,16 +1768,36 @@ parse_arch_list() { # $1 = the ARCHS setting -> ARCH_LIST (order kept, duplicate
 }
 
 is_native() { [[ "$1" == "$HOST_ARCH" ]]; }
-# i386 programs run on an amd64 kernel as they are; every other foreign architecture needs qemu-user.
-needs_qemu() { ! is_native "$1" && ! [[ "$1" == i386 && "$HOST_ARCH" == amd64 ]]; }
+# How an architecture is built:
+#   native     this machine
+#   cross      arm64 on amd64 (ARM64_MODE=cross, the default): cross-compiled in an amd64 Debian container that has the
+#              arm64 packages (dpkg multiarch); the compiler and every build tool run natively
+#   container  i386 on amd64: an i386 container; i386 programs run on an amd64 kernel as they are
+#   emulated   any other (arm64 on amd64 with ARM64_MODE=emulate, amd64 / i386 on arm64): a container of that
+#              architecture whose programs run under qemu-user (binfmt_misc)
+arch_how() {
+  if is_native "$1"; then echo native
+  elif [[ "$1" == arm64 && "$HOST_ARCH" == amd64 && "${S[ARM64_MODE]:-cross}" != emulate ]]; then echo cross
+  elif [[ "$1" == i386 && "$HOST_ARCH" == amd64 ]]; then echo container
+  else echo emulated
+  fi
+}
+needs_qemu() { [[ "$(arch_how "$1")" == emulated ]]; }
+# The platform of an architecture's container: this machine's for a cross build.
+container_platform() { if [[ "$(arch_how "$1")" == cross ]]; then printf '%s' "${ARCH_PLATFORM[$HOST_ARCH]}"; else printf '%s' "${ARCH_PLATFORM[$1]}"; fi; }
+# The name of its build image: <arch> or <arch>-cross.
+image_kind() { if [[ "$(arch_how "$1")" == cross ]]; then printf '%s-cross' "$1"; else printf '%s' "$1"; fi; }
 
 # The base image of an architecture: CONTAINER_IMAGES, else this distribution's release when it has an image (and the
-# packages) for that architecture, so the packages match this machine's build; else Debian 13.
+# packages) for that architecture, so the packages match this machine's build; else Debian 13. A cross build always
+# gets Debian 13 (CONTAINER_IMAGES arm64=... may name another Debian image: Debian has every architecture's packages on
+# one mirror, Ubuntu keeps arm64 on another, ports.ubuntu.com).
 arch_base_image() {
   local a="$1" entry
   for entry in ${S[CONTAINER_IMAGES]//,/ }; do
     if [[ "$(canonical_arch "${entry%%=*}" || true)" == "$a" && -n "${entry#*=}" ]]; then printf '%s' "${entry#*=}"; return 0; fi
   done
+  [[ "$(arch_how "$a")" == cross ]] && { printf '%s' "$DEBIAN_IMAGE"; return 0; }
   case "$DISTRO_ID" in
     debian) printf 'docker.io/library/debian:%s' "${DISTRO_CODENAME:-trixie}" ;;
     ubuntu) if [[ "$a" != i386 && -n "$DISTRO_VERSION" ]]; then printf 'docker.io/library/ubuntu:%s' "$DISTRO_VERSION"; else printf '%s' "$DEBIAN_IMAGE"; fi ;;
@@ -1689,12 +1809,16 @@ arch_base_image() {
 image_ref() { # $1 = arch, $2 = base image: the build image made from it
   local slug="${2,,}"
   slug="$(printf '%s' "$slug" | tr -c 'a-z0-9._-' '-' | sed 's/^[.-]*//')"
-  printf '%s:%s-%s' "$IMAGE_REPO" "$1" "${slug:0:100}"
+  printf '%s:%s-%s' "$IMAGE_REPO" "$(image_kind "$1")" "${slug:0:100}"
 }
-image_recipe() { # what a build image is made of: the recipe number, the base image and the package lists
-  local k
-  { printf 'recipe=%s base=%s\n' "$IMAGE_RECIPE" "$1"
-    while IFS= read -r k; do printf '%s=%s\n' "$k" "${PKGS[$k]}"; done < <(printf '%s\n' "${!PKGS[@]}" | sort)
+# What a build image is made of ($1 = arch, $2 = base image): the recipe number, the base image and the package lists
+# (the apt-cross lists only in a cross image's).
+image_recipe() {
+  local k sets='^apt-cross:'
+  [[ "$(arch_how "$1")" == cross ]] && sets='^$'
+  { printf 'recipe=%s base=%s\n' "$IMAGE_RECIPE" "$2"
+    while IFS= read -r k; do printf '%s=%s\n' "$k" "${PKGS[$k]}"; done < <(printf '%s\n' "${!PKGS[@]}" | grep -v "$sets" | sort)
+    if [[ "$(arch_how "$1")" == cross ]]; then printf 'cross=%s\n' "${ARCH_TRIPLET[$1]}"; fi
   } | sha256_of | cut -c1-16
 }
 image_label() { "$ENGINE" image inspect --format "{{index .Config.Labels \"${2}\"}}" "$1" 2>/dev/null | grep -v '^<no value>$' || true; }
@@ -1848,6 +1972,9 @@ print_arch_overview() {
   step "Architectures: ${ARCH_LIST[*]}"
   for a in "${ARCH_LIST[@]}"; do
     if is_native "$a"; then how="this machine (${DISTRO_NAME}), {ARCH} ${ARCH_DIR[$a]}"
+    elif [[ "$(arch_how "$a")" == cross ]]; then
+      how="cross-compiled by ${ARCH_TRIPLET[$a]}-g++ (runs natively) in an ${HOST_ARCH} container ${ENGINE:-(no engine)},"
+      how+=" base image $(arch_base_image "$a") + the ${a} packages, {ARCH} ${ARCH_DIR[$a]}"
     else
       how="container ${ENGINE:-(no engine)}, base image $(arch_base_image "$a"), {ARCH} ${ARCH_DIR[$a]}"
       if needs_qemu "$a"; then
@@ -1866,29 +1993,31 @@ print_arch_overview() {
 # Runs in a subshell: a failure ends only this architecture.
 prepare_image() {
   local a="$1" base ref recipe have tmp out want
-  base="$(arch_base_image "$a")"; ref="$(image_ref "$a" "$base")"; recipe="$(image_recipe "$base")"
+  local platform; platform="$(container_platform "$a")"
+  base="$(arch_base_image "$a")"; ref="$(image_ref "$a" "$base")"; recipe="$(image_recipe "$a" "$base")"
   have="$(image_label "$ref" akousma.recipe)"
   if [[ "$have" == "$recipe" && "$OPT_UPDATE_IMAGES" == 0 ]]; then info "Image ${ref} (from ${base})"; return 0; fi
   if [[ -z "$have" ]]; then info "Making the image ${ref} from ${base} (once; --update-images makes it again)"
   elif [[ "$have" != "$recipe" ]]; then info "The image ${ref} is out of date (base image or package lists changed): making it again"
   else info "--update-images: making ${ref} again from the newest ${base}"; fi
-  run_logged image-pull "$ENGINE" pull --platform "${ARCH_PLATFORM[$a]}" "$base"
-  if ! out="$("$ENGINE" run --rm --platform "${ARCH_PLATFORM[$a]}" "$base" uname -m 2>&1)"; then
+  run_logged image-pull "$ENGINE" pull --platform "$platform" "$base"
+  if ! out="$("$ENGINE" run --rm --platform "$platform" "$base" uname -m 2>&1)"; then
     if [[ "$out" == *"exec format error"* ]] || needs_qemu "$a"; then
       die "${a} programs don't run here ($(printf '%s\n' "$out" | grep -m1 . | cut -c1-160)): qemu-user for ${ARCH_QEMU[$a]} must be registered in binfmt_misc with the F flag. ${FOREIGN_FIX:-./${SCRIPT_NAME} --install-deps sets it up.}"
     fi
-    die "${ENGINE} can't run ${base} for ${ARCH_PLATFORM[$a]}: ${out}"
+    die "${ENGINE} can't run ${base} for ${platform}: ${out}"
   fi
   out="$(printf '%s\n' "$out" | tail -n1)"
-  case "$a" in amd64) want="x86_64" ;; i386) want="x86_64 i686 i386" ;; arm64) want="aarch64" ;; esac
-  [[ " $want " == *" $out "* ]] || die "${base} for ${ARCH_PLATFORM[$a]} runs as ${out}, not ${a}: the engine didn't give that architecture's image"
+  case "$platform" in linux/amd64) want="x86_64" ;; linux/386) want="x86_64 i686 i386" ;; linux/arm64) want="aarch64" ;; esac
+  [[ " $want " == *" $out "* ]] || die "${base} for ${platform} runs as ${out}, not ${platform#linux/}: the engine didn't give that architecture's image"
   tmp="akousma-build-setup-${a}"
   "$ENGINE" rm -f "$tmp" >/dev/null 2>&1 || true
   # shellcheck disable=SC2064 # $tmp is fixed now
   trap "\"$ENGINE\" rm -f \"$tmp\" >/dev/null 2>&1 || true" EXIT
   container_env
-  container_command "$a" bash "$SCRIPT_PATH" --image-setup --arch-build "$a" --host-arch "$HOST_ARCH"
-  RUN_PROGRESS=0 run_logged image-setup "$ENGINE" run --name "$tmp" --platform "${ARCH_PLATFORM[$a]}" --network host \
+  container_command "$a" bash "$SCRIPT_PATH" --image-setup --arch-build "$a" --host-arch "$HOST_ARCH" \
+    --arm64-mode "${S[ARM64_MODE]}"
+  RUN_PROGRESS=0 run_logged image-setup "$ENGINE" run --name "$tmp" --platform "$platform" --network host \
     --security-opt label=disable -v "${SCRIPT_DIR}:${SCRIPT_DIR}:ro" "${CENV[@]}" "${CEXTRA[@]}" "$base" "${CCMD[@]}"
   run_logged image-commit "$ENGINE" commit --change "LABEL akousma.recipe=${recipe}" --change "LABEL akousma.base=${base}" "$tmp" "$ref"
   ok "Image ${ref}"
@@ -1919,8 +2048,8 @@ run_in_container() {
   if [[ "$ENGINE" == podman && $EUID -ne 0 ]]; then user=(--userns=keep-id)
   elif [[ $EUID -ne 0 ]]; then user=(--user "$(id -u):$(id -g)"); fi
   container_env
-  container_command "$a" bash "$SCRIPT_PATH" "$@"
-  "$ENGINE" run --rm --platform "${ARCH_PLATFORM[$a]}" --network host --security-opt label=disable -w "$PWD" \
+  container_command "$a" bash "$SCRIPT_PATH" "$@" --arm64-mode "${S[ARM64_MODE]}"
+  "$ENGINE" run --rm --platform "$(container_platform "$a")" --network host --security-opt label=disable -w "$PWD" \
     "${user[@]}" "${mounts[@]}" -e "HOME=${home}" -e "AKOUSMA_BUILD_IMAGE=${base}" "${CENV[@]}" \
     "${CEXTRA[@]}" "$ref" "${CCMD[@]}"
 }
@@ -1992,6 +2121,7 @@ main() {
     [[ -n "$OPT_FREEZE" ]] && rm -f "$(lock_part_file "$OPT_FREEZE")"
     (( readonly_mode )) || rm -f "${STAMP_DIR}/last-run"
     if is_native "$a"; then step "[${i}/${n}] ${a}: this machine"
+    elif [[ "$(arch_how "$a")" == cross ]]; then step "[${i}/${n}] ${a}: cross-compiled in an ${HOST_ARCH} container ($(arch_base_image "$a"))"
     else step "[${i}/${n}] ${a}: container ($(arch_base_image "$a"))"; fi
     if [[ -n "${ARCH_BLOCKED[$a]:-}" ]]; then
       warn "${a} can't be built: ${ARCH_BLOCKED[$a]}"
@@ -2072,7 +2202,8 @@ main() {
 arch_main() {
   resolve_settings "$ARCH_BUILD"
   detect_distro
-  info "${ARCH_NAME} ({ARCH} ${S[ARCH]}) on ${DISTRO_NAME}${AKOUSMA_BUILD_IMAGE:+, container from ${AKOUSMA_BUILD_IMAGE}}"
+  info "${ARCH_NAME} ({ARCH} ${S[ARCH]}) on ${DISTRO_NAME}${AKOUSMA_BUILD_IMAGE:+, container from ${AKOUSMA_BUILD_IMAGE}}${CROSS_TRIPLET:+, cross-compiled with ${CROSS_CXX}}"
+  [[ "$CROSS" == 0 || "$PKG_SET" == apt-cross ]] || die "${ARCH_NAME} is cross-compiled in a Debian container, this is ${DISTRO_NAME}: set CONTAINER_IMAGES ${ARCH_NAME}=${DEBIAN_IMAGE} (or --arm64-mode emulate)"
   resolve_outputs
   local readonly_mode=0; [[ "$OPT_DRY_RUN" == 1 || "$OPT_LIST" == 1 || "$OPT_CHECK_DEPS" == 1 ]] && readonly_mode=1
   if (( ! readonly_mode )); then
@@ -2147,6 +2278,13 @@ image_setup_main() {
   resolve_settings "$ARCH_BUILD"
   detect_distro
   [[ -n "$PM" ]] || die "${DISTRO_NAME}: no known package manager (apt, dnf, pacman, zypper); choose another base image (CONTAINER_IMAGES)"
+  if [[ "$CROSS" == 1 ]]; then
+    # Cross-compiling takes the target's packages from the same Debian mirror (dpkg multiarch); Ubuntu has them on
+    # another one (ports.ubuntu.com), other distributions don't do it this way.
+    [[ "$DISTRO_ID" == debian ]] || die "${ARCH_NAME} is cross-compiled in a Debian container, ${DISTRO_NAME} is not Debian: set CONTAINER_IMAGES ${ARCH_NAME}=${DEBIAN_IMAGE} (or --arm64-mode emulate)"
+    info "dpkg --add-architecture ${ARCH_NAME}"
+    dpkg --add-architecture "$ARCH_NAME"
+  fi
   S[TESTS]=ON OPT_INSTALL_DEPS=1 OPT_YES=1 OPT_VERBOSE=1
   OUTPUTS=(install appimage); [[ -n "$NATIVE_PKG" ]] && OUTPUTS+=("$NATIVE_PKG")
   info "${ARCH_NAME} image on ${DISTRO_NAME}"
