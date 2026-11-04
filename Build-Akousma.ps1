@@ -111,6 +111,15 @@
 .PARAMETER ForceRebuild       Rebuild these packages even when they are up to date, e.g. -ForceRebuild gst-plugins-good,akousma
                               ('all' = everything). Dependencies get a clean copy; akousma a fresh copy of its source and an
                               empty build folder.
+.PARAMETER Clean              Rebuild Akousma from scratch: a fresh copy of its source and an empty build folder (the same
+                              as -ForceRebuild akousma). Without it Akousma is always built incrementally: the build folder is
+                              kept, CMake runs again only when its arguments changed, and ninja recompiles only the files
+                              that changed (and what includes them). A change of the MSVC toolset (VCToolsVersion) cleans
+                              by itself.
+.PARAMETER IncrementalLink    Release builds: link akousma.exe incrementally (/INCREMENTAL /OPT:NOREF /OPT:NOICF instead of
+                              CMake's /INCREMENTAL:NO), so a relink after a small change is faster. For development only: the
+                              exe gets bigger (padding, no unreferenced-code removal), so don't ship an AkousmaSetup made with
+                              it. Debug builds link incrementally anyway (CMake's default). Akousma uses no /LTCG.
 .PARAMETER NoChangeDetection  Build what has no output and skip everything else, whatever changed (akousma is still rebuilt
                               when its build tree is not at -AkousmaRef). Stamps are still written after builds.
 .PARAMETER RebuildDependents  When a package is rebuilt because it changed, also rebuild the packages that link it directly
@@ -236,6 +245,9 @@ param(
   [switch]$SaveSettings,
   [Alias('force_rebuild')]
   [string[]]$ForceRebuild   = @(),
+  [switch]$Clean,
+  [Alias('incremental_link')]
+  [switch]$IncrementalLink,
   [Alias('no_change_detection')]
   [switch]$NoChangeDetection,
   [Alias('rebuild_dependents')]
@@ -1043,6 +1055,8 @@ function Write-SourceSummary {
   else { Write-Host "Akousma source: $AkousmaRepo @ $AkousmaRef" -ForegroundColor Cyan }
   Write-Host "QtSparkle update check: $(if ($EnableQtSparkle) { 'on (-EnableQtSparkle)' } else { 'off' })" -ForegroundColor Cyan
   Write-Host "Git commit in the version: $(if ($IncludeGitCommit) { 'yes (-IncludeGitCommit)' } else { 'no (release version only)' })" -ForegroundColor Cyan
+  $link = if ($BuildType -eq 'debug') { 'incremental (Debug)' } elseif ($IncrementalLink) { 'incremental (-IncrementalLink; for development, not for shipping)' } else { 'full (/INCREMENTAL:NO; -IncrementalLink for development)' }
+  Write-Host "Akousma: $(if ($Clean) { 'clean rebuild (-Clean)' } else { 'incremental build' }); linking: $link" -ForegroundColor Cyan
 }
 Write-SourceSummary
 Write-PatchSummary
@@ -1433,7 +1447,9 @@ if ($PackagePatches.Count -gt 0) {
     })
   }
 }
+if ($Clean -and $ForceRebuild -notcontains 'akousma' -and $ForceRebuild -notcontains 'all') { $ForceRebuild = @($ForceRebuild) + @('akousma') }
 if ($ForceRebuild.Count -gt 0) { $buildArgs.ForceRebuild     = $ForceRebuild }
+if ($IncrementalLink)        { $buildArgs.IncrementalLink  = $true }
 if ($NoChangeDetection)      { $buildArgs.NoChangeDetection = $true }
 if ($RebuildDependents)      { $buildArgs.RebuildDependents = $true }
 if ($Only.Count -gt 0)       { $buildArgs.Only             = $Only }
@@ -1521,6 +1537,7 @@ $akousma_repo = $AkousmaRepo
 $akousma_source = if ($AkousmaSource) { $AkousmaSource.Replace('\', '/').TrimEnd('/') } else { "" }
 $enable_qtsparkle = [bool]$EnableQtSparkle
 $include_git_commit = [bool]$IncludeGitCommit
+$incremental_link = [bool]$IncrementalLink
 
 # --- patched: jobs default, hashtables handed down by the parallel scheduler ---
 if ($jobs -le 0) { $jobs = [Environment]::ProcessorCount }
@@ -2325,6 +2342,16 @@ function SyncGitRepository {
   }
 
   if ($pinned_ref) {
+    # patched: the Akousma clone is where you may edit Akousma; its uncommitted changes are never thrown away by the checkout.
+    if ($repo_name -eq 'akousma') {
+      $dirty = @(& git -C $repo_path status --porcelain=v1 --untracked-files=no 2>$null | Where-Object { $_ })
+      $global:LASTEXITCODE = 0
+      if ($dirty.Count -gt 0) {
+        throw ("$repo_path has uncommitted changes ($($dirty.Count) file(s), e.g. $(($dirty | Select-Object -First 3 | ForEach-Object { $_.Substring(3) }) -join ', ')). " +
+               "The build checks out $pinned_ref there and won't discard them: build them with -AkousmaSource $repo_path (incremental), " +
+               "or commit / stash them (git -C $repo_path stash).")
+      }
+    }
     # A branch is checked out as the fetched remote branch (detached), so a new commit on it is built.
     $checkout_ref = Get-GitRefSpec -repo_path $repo_path -ref $pinned_ref
     Write-Host "Checking out $repo_name @ $pinned_ref$(if ($checkout_ref -ne $pinned_ref) { " ($checkout_ref)" })" -ForegroundColor Yellow
@@ -2590,12 +2617,24 @@ function CMakeBuild {
   if ($additional_args) {
     $configure_args += $additional_args
   }
-  Write-Host "cmake" @configure_args
   if ($strawberry_perl_bin) { RemovePathFromEnvPath -path $strawberry_perl_bin }
   if ($strawberry_perl_site_bin) { RemovePathFromEnvPath -path $strawberry_perl_site_bin }
-  & cmake @configure_args
-  if ($LASTEXITCODE -ne 0) {
-    throw "CMake configuration failed"
+  # patched: an existing build folder configured with the same arguments is not configured again. The build re-runs CMake
+  # by itself when a CMakeLists.txt or another input of the configuration changed (ninja's regeneration rule).
+  $configured_file = Join-Path $build_path ".build-akousma-configure-args"
+  $configured_text = ($configure_args -join "`n")
+  if ((Test-Path -LiteralPath (Join-Path $build_path "CMakeCache.txt")) -and (Test-Path -LiteralPath $configured_file) -and
+      ((Get-Content -Raw -LiteralPath $configured_file) -ceq $configured_text)) {
+    Write-Host "CMake: $build_path is configured with these arguments already (not run again)" -ForegroundColor DarkCyan
+  }
+  else {
+    Remove-Item -LiteralPath $configured_file -Force -ErrorAction SilentlyContinue
+    Write-Host "cmake" @configure_args
+    & cmake @configure_args
+    if ($LASTEXITCODE -ne 0) {
+      throw "CMake configuration failed"
+    }
+    Set-Content -LiteralPath $configured_file -Value $configured_text -NoNewline -Encoding utf8
   }
   Push-Location $build_path
   try {
@@ -4982,6 +5021,10 @@ function Get-AkousmaCMakeArgs {
   # (64-bit file offsets and sizes to 32-bit size_t / qsizetype) that x64 doesn't have. x64 is unchanged.
   $werror = if ($arch -eq "x86") { "OFF" } else { "ON" }
   $arch_args = if ($arch -eq "x86") { @("-DTARGET_ARCH=i686") } else { @() }
+  # -IncrementalLink (Release): incremental linking instead of CMake's /INCREMENTAL:NO. /INCREMENTAL can't be combined with
+  # /OPT:REF or /OPT:ICF (the linker's default without /DEBUG; it would turn incremental linking off again), hence NOREF/NOICF.
+  # Akousma uses no /LTCG (/GL), which would also rule it out. Debug builds link incrementally already (CMake's default).
+  if ($incremental_link -and $build_type -ne "debug") { $arch_args += @("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=/INCREMENTAL /OPT:NOREF /OPT:NOICF") }
   return @(
     "-DARCH=$arch"
   ) + $arch_args + @(
@@ -5336,6 +5379,7 @@ function Invoke-ParallelQueue {
         if ($akousma_source) { $child_args += @("-akousma_source", $akousma_source) }
         if ($enable_qtsparkle) { $child_args += @("-enable_qtsparkle") }
         if ($include_git_commit) { $child_args += @("-include_git_commit") }
+        if ($incremental_link) { $child_args += @("-incremental_link") }
         $log = Join-Path $logs "$c.log"
         $p = Start-Process -FilePath $pwsh -ArgumentList $child_args -NoNewWindow -PassThru `
                -RedirectStandardOutput $log -RedirectStandardError "$log.err"
@@ -5659,7 +5703,7 @@ function Complete-PackageStamp([string]$name, [string]$state = "built") {
   # After a successful build (or when adopting existing output). Computed again here, so a git package records the commit the
   # build actually used (an unpinned clone may have been pulled).
   $fp = Get-PackageFingerprint -name $name
-  Write-PackageStamp $name ([ordered]@{ package = $name; fingerprint = $fp.Hash; state = $state; time = (Get-Date).ToString("s"); parts = $fp.Parts })
+  Write-PackageStamp $name ([ordered]@{ package = $name; fingerprint = $fp.Hash; state = $state; time = (Get-Date).ToString("s"); toolchain = [string]$env:VCToolsVersion; parts = $fp.Parts })
 }
 
 function Set-PackageStampPending([string]$name, [string]$reason) {
@@ -5667,7 +5711,8 @@ function Set-PackageStampPending([string]$name, [string]$reason) {
   # fails or is interrupted, the next run rebuilds it instead of trusting a half-updated prefix. The old details are kept for the reasons.
   $old = Read-PackageStamp $name
   $parts = if ($old -and $old.parts) { $old.parts } else { $null }
-  Write-PackageStamp $name ([ordered]@{ package = $name; fingerprint = "pending"; state = "pending"; reason = $reason; time = (Get-Date).ToString("s"); parts = $parts })
+  $toolchain = if ($old -and $old.toolchain) { [string]$old.toolchain } else { "" }
+  Write-PackageStamp $name ([ordered]@{ package = $name; fingerprint = "pending"; state = "pending"; reason = $reason; time = (Get-Date).ToString("s"); toolchain = $toolchain; parts = $parts })
 }
 
 function Get-ShortSourceId([string]$key, [string]$value) {
@@ -5832,6 +5877,14 @@ function Get-BuildPlan {
       foreach ($r in (Get-FingerprintChanges $stamp $fp)) { $e.Reasons.Add($r) }
     }
     else { $e.Reasons.Add('up to date') }
+    # Akousma is built incrementally, so its build folder must come from the same compiler: a new MSVC toolset (a Visual
+    # Studio update) starts it again. The dependencies keep their builds (MSVC 14.x stays binary compatible).
+    if ($name -eq 'akousma' -and -not $forced -and $stamp -and $stamp.toolchain -and $env:VCToolsVersion -and
+        $stamp.toolchain -ne $env:VCToolsVersion) {
+      if ($e.Action -notin 'build', 'rebuild') { $e.Reasons.Clear() }
+      $e.Action = 'rebuild'; $e.Clean = $true
+      $e.Reasons.Add("MSVC toolset changed $($stamp.toolchain) -> $($env:VCToolsVersion) (clean rebuild)")
+    }
     $e.Own = $e.Action -in 'build', 'rebuild'
   }
   if ($no_change_detection) { return $plan }

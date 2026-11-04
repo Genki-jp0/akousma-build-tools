@@ -1098,14 +1098,23 @@ resolve_akousma_source() {
     fi
   fi
 
-  if (( ! readonly_mode )); then
-    local head; head="$(git -C "$AKOUSMA_SRC" rev-parse -q --verify HEAD 2>/dev/null || true)"
-    if [[ "$head" != "$commit" ]] || [[ -n "$(git -C "$AKOUSMA_SRC" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-      info "Checking out ${commit:0:12}"
-      git -C "$AKOUSMA_SRC" -c advice.detachedHead=false checkout -q --force --detach "$commit"
+  # The clone is where you may edit Akousma: its uncommitted changes are never thrown away. A checkout with changes stops the
+  # run (build it with --source, which is incremental, or commit / stash them). Only the files that differ between the two
+  # commits are written by the checkout, so the build recompiles just those.
+  local dirty; dirty="$(git -C "$AKOUSMA_SRC" status --porcelain --untracked-files=no 2>/dev/null || true)"
+  if [[ -n "$dirty" ]]; then
+    local n; n="$(printf '%s\n' "$dirty" | wc -l)"
+    if (( readonly_mode )); then
+      warn "${AKOUSMA_SRC} has uncommitted changes (${n} file(s)): a build would stop there (see below)"
+    else
+      die "${AKOUSMA_SRC} has uncommitted changes in ${n} file(s) ($(printf '%s\n' "$dirty" | head -n3 | cut -c4- | paste -sd, - | sed 's/,/, /g')). The run checks out ${commit:0:12} there and won't discard them: build them with --source ${AKOUSMA_SRC} (incremental; that build folder is the same), or commit / stash them (git -C ${AKOUSMA_SRC} stash)."
     fi
-    # Untracked files are removed; ignored ones (files Akousma's CMake generates in the source tree) are kept.
-    git -C "$AKOUSMA_SRC" clean -q -fd
+  elif (( ! readonly_mode )); then
+    local head; head="$(git -C "$AKOUSMA_SRC" rev-parse -q --verify HEAD 2>/dev/null || true)"
+    if [[ "$head" != "$commit" ]]; then
+      info "Checking out ${commit:0:12}"
+      git -C "$AKOUSMA_SRC" -c advice.detachedHead=false checkout -q --detach "$commit"
+    fi
     git -C "$AKOUSMA_SRC" submodule -q update --init --recursive 2>/dev/null || true
   fi
 }
@@ -1151,9 +1160,11 @@ build_kdsa() {
     run_logged kdsa-fetch git -C "$src" fetch --tags --force origin
   fi
   KDSA_COMMIT="$(git -C "$src" rev-parse "${KDSA_REF}^{commit}")" || die "KDSingleApplication ref ${KDSA_REF} not found"
-  want="commit=${KDSA_COMMIT} qt=$(pkg_installed_version "$(qt_base_package)")"
+  want="commit=${KDSA_COMMIT} qt=$(pkg_installed_version "$(qt_base_package)") compiler=$(compiler_id)"
   stamp="${STAMP_DIR}/kdsingleapplication.stamp"
-  if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" && -d "${DEPS_PREFIX}" && "$OPT_FORCE" == 0 ]]; then
+  # (A stamp from before the compiler was recorded counts as this compiler's.)
+  local have=""; [[ -f "$stamp" ]] && have="$(cat "$stamp")"; [[ "$have" == *" compiler="* ]] || have+=" compiler=$(compiler_id)"
+  if [[ "$have" == "$want" && -d "${DEPS_PREFIX}" && "$OPT_FORCE" == 0 ]]; then
     info "skip: ${KDSA_REF} (${KDSA_COMMIT:0:12}) is built"; return 0
   fi
   git -C "$src" -c advice.detachedHead=false checkout -q --force --detach "$KDSA_COMMIT"
@@ -1192,17 +1203,27 @@ compute_config() {
   auto_cmake_args
   CONFIGURE_ARGS+=("${AUTO_CMAKE_ARGS[@]}" "${CMAKE_ARGS_ARR[@]}")
   CONFIG_TEXT="source=${AKOUSMA_SRC} generator=${GENERATOR} $(printf '%s ' "${CONFIGURE_ARGS[@]}")tests=${S[TESTS]} kdsa=${KDSA_FROM_SOURCE}:${KDSA_REF}"
+  TOOLCHAIN="$(compiler_id)"
   CONFIG_HASH="$(printf '%s' "$CONFIG_TEXT" | sha256_of | cut -c1-16)"
   DEPS_TEXT="$(deps_snapshot build runtime tests)"
   DEPS_HASH="$(printf '%s' "$DEPS_TEXT" | sha256_of | cut -c1-16)"
   BUILD_ID="akousma=${AKOUSMA_ID} config=${CONFIG_HASH} deps=${DEPS_HASH}"
 }
 
-# Decides what to do. BUILD_NEEDED=1/0 with BUILD_REASONS; per output: OUT_NEEDED[o] and OUT_REASON[o].
+# The C++ compiler (its first --version line): a new one starts the build folder again, as ninja doesn't track it.
+compiler_id() { "${CXX:-c++}" --version 2>/dev/null | head -n1 || true; }
+
+# Decides what to do. BUILD_NEEDED=1/0 with BUILD_REASONS; per output: OUT_NEEDED[o] and OUT_REASON[o]. A build is
+# incremental (the CMake build folder is kept, ninja recompiles what changed) unless CLEAN_NEEDED=1: --clean, or another
+# compiler than the one the folder was built with.
 declare -A OUT_NEEDED=() OUT_REASON=()
 detect_changes() {
   local f="${STAMP_DIR}/build.stamp" old
-  BUILD_REASONS=()
+  BUILD_REASONS=() CLEAN_NEEDED=0
+  old="$(stamp_get "$f" toolchain)"
+  if [[ "$OPT_CLEAN" == 0 && -n "$old" && -n "$TOOLCHAIN" && "$old" != "$TOOLCHAIN" ]]; then
+    CLEAN_NEEDED=1; BUILD_REASONS+=("compiler changed: ${old} -> ${TOOLCHAIN} (full rebuild)")
+  fi
   if [[ "$OPT_CLEAN" == 1 ]]; then BUILD_REASONS+=("--clean: full rebuild")
   elif [[ ! -f "${CMAKE_BUILD_DIR}/CMakeCache.txt" || ! -x "${CMAKE_BUILD_DIR}/akousma" ]]; then BUILD_REASONS+=("no build yet in ${CMAKE_BUILD_DIR}")
   elif [[ ! -f "$f" ]]; then BUILD_REASONS+=("no stamp (an unfinished or older build)")
@@ -1333,7 +1354,7 @@ build_akousma() {
   step "Building Akousma ($(printf '%s; ' "${BUILD_REASONS[@]}" | sed 's/; $//'))"
   info "source: ${AKOUSMA_DESC}"
   local n; for n in "${AUTO_NOTES[@]}"; do info "note: ${n}"; done
-  if [[ "$OPT_CLEAN" == 1 ]]; then info "Deleting ${CMAKE_BUILD_DIR}"; rm -rf "$CMAKE_BUILD_DIR"; fi
+  if [[ "$OPT_CLEAN" == 1 || "$CLEAN_NEEDED" == 1 ]]; then info "Deleting ${CMAKE_BUILD_DIR}"; rm -rf "$CMAKE_BUILD_DIR"; fi
   rm -f "${STAMP_DIR}/build.stamp"
   # A build folder made with another generator or for another source folder can't be reused.
   local cache="${CMAKE_BUILD_DIR}/CMakeCache.txt"
@@ -1344,8 +1365,19 @@ build_akousma() {
     rm -rf "$CMAKE_BUILD_DIR"
   fi
   mkdir -p "$CMAKE_BUILD_DIR"
-  run_logged configure cmake -S "$AKOUSMA_SRC" -B "$CMAKE_BUILD_DIR" "${GENERATOR_ARGS[@]}" "${CONFIGURE_ARGS[@]}"
+  # CMake runs only when the folder isn't configured with these arguments and packages yet; otherwise the build re-runs it
+  # by itself when a CMakeLists.txt changed. Then ninja recompiles the files that changed and relinks.
+  local configured="${STAMP_DIR}/configure.stamp" want_conf="config=${CONFIG_HASH} deps=${DEPS_HASH}"
+  if [[ -f "$cache" && -f "$configured" && "$(cat "$configured")" == "$want_conf" ]]; then
+    info "CMake: configured with these settings and packages already (not run again)"
+  else
+    rm -f "$configured"
+    run_logged configure cmake -S "$AKOUSMA_SRC" -B "$CMAKE_BUILD_DIR" "${GENERATOR_ARGS[@]}" "${CONFIGURE_ARGS[@]}"
+    mkdir -p "$STAMP_DIR"; printf '%s' "$want_conf" > "$configured"
+  fi
+  local start=$SECONDS
   progress build cmake --build "$CMAKE_BUILD_DIR" -j "${S[JOBS]}"
+  info "$(build_summary) in $(( SECONDS - start ))s"
   if [[ "${S[TESTS]}" == ON ]]; then
     if grep -q '^build_tests' <(cmake --build "$CMAKE_BUILD_DIR" --target help 2>/dev/null | sed 's/^[. ]*//; s/:.*//'); then
       progress build-tests cmake --build "$CMAKE_BUILD_DIR" --target build_tests -j "${S[JOBS]}"
@@ -1357,10 +1389,18 @@ build_akousma() {
       warn "Akousma's tests are not configured (GTest / GMock / Qt Test not found)"
     fi
   fi
-  write_stamp build "akousma=${AKOUSMA_ID}" "config=${CONFIG_HASH}" "deps=${DEPS_HASH}" "config_text=${CONFIG_TEXT}" \
+  write_stamp build "akousma=${AKOUSMA_ID}" "config=${CONFIG_HASH}" "deps=${DEPS_HASH}" "toolchain=${TOOLCHAIN}" "config_text=${CONFIG_TEXT}" \
     "source=${AKOUSMA_DESC}" "built=$(date '+%Y-%m-%d %H:%M:%S')"
   printf '%s\n' "$DEPS_TEXT" > "${STAMP_DIR}/build.deps"
   ok "Built ${CMAKE_BUILD_DIR}/akousma"
+}
+
+build_summary() { # what ninja did in the last build: "<n> files compiled, linked" (from build.log)
+  local log="${LOG_DIR}/build.log" c l
+  [[ -f "$log" ]] || return 0
+  c="$(grep -cE '^\[[0-9]+/[0-9]+\] Building (CXX|C) object' "$log" || true)"
+  l="$(grep -cE '^\[[0-9]+/[0-9]+\] Linking' "$log" || true)"
+  printf '%s file(s) compiled, %s link step(s)' "${c:-0}" "${l:-0}"
 }
 
 output_wanted() { (( BUILD_NEEDED )) || [[ "${OUT_NEEDED[$1]}" == 1 ]]; }

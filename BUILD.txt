@@ -310,9 +310,24 @@ commit, the hashes of its patches (local and the build tools' own), build type/a
 start the build prints one line per package, skip / adopt / build / rebuild, with the reason (e.g. "patch changed:
 qtbase-disable-openssl-hash.patch", "glib version changed glib-2.86.0.tar.xz -> glib-2.86.1.tar.xz", "akousma
 commit changed 1a2b3c4 -> 5d6e7f8").
-- Akousma: from git, the build copy is reset to the -AkousmaRef commit; a local checkout is built as it is. The
-  existing build folder is reused, so only what changed is recompiled, then it is relinked and AkousmaSetup is
-  re-created. The first run after switching from Build-Strawberry.ps1 builds Akousma in the new <BuildPath>\akousma
+- Akousma is built incrementally: from git, the build copy (<BuildPath>\akousma, the script's own copy) is reset to
+  the -AkousmaRef commit, and files that end up unchanged keep their timestamps; a local checkout (-AkousmaSource) is
+  built as it is and never changed. The existing build folder is reused: CMake runs again only when its arguments
+  changed (otherwise ninja re-runs it by itself when a CMakeLists.txt changed), and ninja recompiles only the .cpp
+  files that changed and what includes a changed header, then relinks akousma.exe; AkousmaSetup is re-created.
+  Edit Akousma in a checkout of your own and build it with -AkousmaSource <folder>: each run after an edit recompiles
+  the edited files only. The clone in <SrcPath>\akousma is checked out at -AkousmaRef by each run; if you edited it
+  there, the run stops instead of discarding your changes (build it with -AkousmaSource <SrcPath>\akousma, or commit
+  or stash the changes).
+  A full Akousma build happens only for the first build of a build type / architecture, after a change of the MSVC
+  toolset (VCToolsVersion: a Visual Studio update; the plan says "MSVC toolset changed ... (clean rebuild)"), and with
+  -Clean (or -ForceRebuild akousma). Rebuilt dependencies only make it relink (and recompile what includes their
+  changed headers).
+  Linking: CMake links Debug builds incrementally (/INCREMENTAL) already. Release builds (the default) link with
+  /INCREMENTAL:NO, so a relink of akousma.exe is a full link; -IncrementalLink links Release incrementally too
+  (/INCREMENTAL /OPT:NOREF /OPT:NOICF, as /INCREMENTAL can't be used with /OPT:REF or /OPT:ICF; Akousma uses no /LTCG,
+  which would rule it out too). That only speeds up the link step, a few seconds to tens of seconds; the big saving is
+  the incremental compile. The exe is bigger and not meant for shipping: don't publish an AkousmaSetup built with it. The first run after switching from Build-Strawberry.ps1 builds Akousma in the new <BuildPath>\akousma
   folder, so that one is a full Akousma build.
 - Dependencies whose stamp changed are rebuilt from a clean copy. A header-only one (utfcpp, sparsehash, boost) also
   rebuilds what includes it. After any rebuild akousma is relinked and AkousmaSetup re-created. The dependency
@@ -321,6 +336,8 @@ commit changed 1a2b3c4 -> 5d6e7f8").
 Options:
   -List                  show what would be rebuilt and why, build nothing
   -ForceRebuild a,b      rebuild these anyway (e.g. -ForceRebuild gst-plugins-good; akousma = full rebuild)
+  -Clean                 Akousma from scratch (the same as -ForceRebuild akousma)
+  -IncrementalLink       Release: link akousma.exe incrementally (development only, see above)
   -NoChangeDetection     only build what has no output
   -RebuildDependents     also rebuild packages that link a rebuilt one (e.g. after a DLL rename)
 A new dependency version is a new download URL (or, for ffmpeg, which is built from git, the version itself), so the

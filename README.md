@@ -82,7 +82,10 @@ versions.
 ```
 
 The first build of an architecture builds every dependency (several hours). Later runs rebuild only what changed
-(printing the reason), then relink Akousma and re-create the installer.
+(printing the reason), then relink Akousma and re-create the installer. Akousma itself is always built incrementally: after
+editing a `.cpp` (in an `-AkousmaSource` checkout, or a new commit) only the changed files are recompiled before the
+relink. Only `-Clean` or a new MSVC toolset rebuild it from scratch. Debug builds link incrementally; for Release,
+`-IncrementalLink` does too (for development; the big saving is the incremental compile, not the link).
 
 Output, for x64 release with the default folders:
 
@@ -169,7 +172,10 @@ the machine's own architecture.
 
 A branch is built at `origin/<branch>` right after a fetch, never at a stale local branch. A second run with nothing
 changed (same Akousma commit, settings and package versions) skips the build and the outputs; otherwise CMake rebuilds
-only what changed. `--force` builds anyway, `--clean` starts the CMake build folder again.
+only what changed: after editing one `.cpp` in a `--source` checkout, a run recompiles that file and relinks.
+`--force` builds anyway, `--clean` starts the CMake build folder again (a full rebuild; otherwise only a new
+compiler does that). Your uncommitted changes in the script's Akousma clone are never discarded: the run stops and
+points to `--source` instead.
 
 Output, release build with the default folders (`~/Atelier`):
 

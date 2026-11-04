@@ -88,8 +88,10 @@ Akousma source:
   --ref REF              branch, tag or commit, default master. Each run fetches (git fetch --prune --tags) and then
                          builds origin/<branch> for a branch, so it always builds the remote's newest commit. (A local
                          branch of the same name in the clone is never used: it would be stale.) Then a tag, then a
-                         commit id. The clone is checked out detached at that commit; untracked files are removed,
-                         ignored ones (files Akousma's CMake generates in the source tree) are kept.
+                         commit id. The clone is checked out detached at that commit (git writes only the files that
+                         differ, so only those are recompiled). Your changes in it are never discarded: when the
+                         clone has uncommitted changes the run stops and says so (build them with --source <clone>,
+                         or commit / stash them); untracked files are left alone.
   --source DIR           build a local checkout instead. Built out of tree; the checkout is not changed (except the
                          files Akousma's own CMake writes there: debian/changelog and dist/scripts/maketarball.sh,
                          both in its .gitignore). Its id for change detection is the commit plus a hash of the
@@ -309,12 +311,27 @@ When all three are unchanged and the build folder has its akousma binary, the bu
 -DBUILD_WERROR=OFF -> -DBUILD_WERROR=ON", "packages changed: qt6-base-dev 6.4.2+dfsg-21.1build5 -> ..."), and CMake
 configures and builds again in the same folder, so only what changed is recompiled. A changed package version
 re-runs CMake too (an updated Qt may need it).
+
+Builds are incremental: the CMake build folder is kept, and ninja recompiles only the .cpp files that changed (and
+those that include a changed header), then relinks akousma (the final log line of the build says how many files were
+compiled: "1 file(s) compiled, 1 link step(s) in 9s"). CMake runs only when the folder isn't configured with the
+current settings and package versions yet (stamps/configure.stamp); otherwise ninja re-runs it by itself when a
+CMakeLists.txt changed. The usual way to work on Akousma:
+  ./build-akousma.sh --source ~/src/Akousma --outputs install    edit, run again: the edited files are recompiled
+A new commit on the branch (or --ref <commit>) works the same way: the checkout writes only the files that changed.
+--source on the clone itself (<SRC_PATH>/akousma) builds in the same folder as the clone's builds, so switching
+between the two stays incremental; another --source folder starts the build folder again once (see --source).
+A full rebuild happens only on: the first build of a build type / architecture, --clean, another C++ compiler than the
+build folder was made with (the first line of "c++ --version" is in the stamp; "compiler changed: ... (full
+rebuild)"), a switch of the CMake generator or source folder. Packages and settings changes are incremental too.
+Packages: the .deb build (dpkg-buildpackage) keeps its own obj-* build folder and the AppImage its AppDir; they
+take the build's files, not a rebuild.
 Each output has its own stamp (stamps/<output>.stamp): it is made again when the build changed, when its file is gone,
 or when its own inputs changed (the install folder path; the AppImage tools; tests for the packages). So adding --deb
 to an unchanged build only makes the .deb.
   --list     shows this decision for every step, builds nothing
   --force    builds and makes the outputs anyway (CMake still only recompiles what changed)
-  --clean    deletes the CMake build folder first
+  --clean    deletes the CMake build folder first (a full rebuild)
 A failed build leaves no stamp, so the next run builds again.
 Each architecture has its own stamps (in its build tree) and is decided on its own: the packages of a container
 architecture are the ones in its image, so a new image (--update-images) rebuilds that architecture only.
@@ -464,3 +481,13 @@ rate-limited there), and a CA certificate was passed in with --container-arg (th
 Not run: podman, the AppImage of i386 / arm64 (GitHub release downloads were blocked there, so linuxdeploy could not
 be fetched; the tool names follow linuxdeploy's i386 / aarch64 assets), a Fedora or openSUSE machine's containers, an
 arm64 machine.
+
+Incremental builds, the same day, amd64 (native) build folder of a finished build, other builds running on the machine:
+  - one line added to src/core/commandlineoptions.cpp in the script's clone: the run stopped before building
+    ("has uncommitted changes in 1 file(s) ... build them with --source ..."), the file untouched
+  - --source <that clone>: CMake ran once (no configure stamp yet), then "[1/3] Building CXX object
+    .../commandlineoptions.cpp.o, [2/3] Linking CXX static library, [3/3] Linking CXX executable": 6 s; the .deb's
+    obj-* build also compiled only that file (its 5.7 min were dh_dwz, dh_strip and compressing the debug package)
+  - the change undone, a normal run with --outputs install: "CMake: configured ... (not run again)", 1 file compiled,
+    2 link steps in 5 s, 11 s for the whole run; a run with nothing changed: skip, 5 s
+  - a different compiler line in the stamp: --list says "compiler changed: ... (full rebuild)"
