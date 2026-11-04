@@ -89,10 +89,10 @@ relink. Only `-Clean` or a new MSVC toolset rebuild it from scratch. Debug build
 
 Output, for x64 release with the default folders:
 
-* `C:\Atelier\data\projects\akousma\msvc_\build_x86_64_release\akousma\build\akousma.exe`
-* `C:\Atelier\data\projects\akousma\msvc_\build_x86_64_release\AkousmaSetup\AkousmaSetup-<version>-msvc-x64.exe`
+* `C:\Akousma\data\projects\akousma\msvc_\build_x86_64_release\akousma\build\akousma.exe`
+* `C:\Akousma\data\projects\akousma\msvc_\build_x86_64_release\AkousmaSetup\AkousmaSetup-<version>-msvc-x64.exe`
   (x86: `build_x86_release\...-msvc-x86.exe`, arm64: `build_arm64_release\...-msvc-arm64.exe`)
-* the log: `C:\Atelier\data\projects\akousma\build.log` (x86: `build_x86.log`), per package: `<build tree>\logs`
+* the log: `C:\Akousma\data\projects\akousma\build.log` (x86: `build_x86.log`), per package: `<build tree>\logs`
 
 ### Settings and folders
 
@@ -101,11 +101,11 @@ you change it), the build type, the Akousma source and the folders. The first ru
 `.gitignore` keeps it out of git. A parameter on the command line wins for that run; add `-SaveSettings` to write it
 into the file.
 
-Everything goes under `C:\Atelier` by default (`-WorkRoot E:\` moves it all):
+Everything goes under `C:\Akousma` by default (`-WorkRoot E:\` moves it all):
 
-* `C:\Atelier\data\projects\akousma\...`: downloads, sources, build trees, `build.log`, jom
-* `C:\Atelier\akousma_msvc_<arch>_<build type>`: the dependency prefix
-* `C:\Atelier\temp`, `C:\Atelier\cache\pip`, `C:\Atelier\cargo`, `C:\Atelier\rustup`
+* `C:\Akousma\data\projects\akousma\...`: downloads, sources, build trees, `build.log`, jom
+* `C:\Akousma\akousma_msvc_<arch>_<build type>`: the dependency prefix
+* `C:\Akousma\temp`, `C:\Akousma\cache\pip`, `C:\Akousma\cargo`, `C:\Akousma\rustup`
 
 Coming from the older `C:\` or `strawberry` folders, or using upstream's prebuilt dependency packages: see "Folders" in
 BUILD.txt.
@@ -189,14 +189,14 @@ only what changed: after editing one `.cpp` in a `--source` checkout, a run reco
 compiler does that). Your uncommitted changes in the script's Akousma clone are never discarded: the run stops and
 points to `--source` instead.
 
-Output, release build with the default folders (`~/Atelier`):
+Output, release build with the default folders (`~/Akousma`):
 
-* `~/Atelier/akousma_linux_x86_64_release/bin/akousma`: the install folder (i386: `akousma_linux_i686_release`, arm64:
+* `~/Akousma/akousma_linux_x86_64_release/bin/akousma`: the install folder (i386: `akousma_linux_i686_release`, arm64:
   `akousma_linux_aarch64_release`)
-* `~/Atelier/data/projects/akousma/linux_/build_x86_64_release/packages/`: `Akousma-<version>-x86_64.AppImage`,
+* `~/Akousma/data/projects/akousma/linux_/build_x86_64_release/packages/`: `Akousma-<version>-x86_64.AppImage`,
   `akousma_<version>-<codename>_amd64.deb`, `akousma-<version>-1.<dist>.x86_64.rpm` (i386: `build_i686_release`,
   `-i686.AppImage`, `_i386.deb`; arm64: `build_aarch64_release`, `-aarch64.AppImage`, `_arm64.deb`, `.aarch64.rpm`)
-* the log: `~/Atelier/data/projects/akousma/build_linux.log`, per step: `<build folder>/logs`
+* the log: `~/Akousma/data/projects/akousma/build_linux.log`, per step: `<build folder>/logs`
 
 ### Settings and folders
 
@@ -209,7 +209,7 @@ wins for that run; add `--save-settings` to write it into the file:
 ./build-akousma.sh --src-path /mnt/data/akousma/src --save-settings --dry-run   # save without building
 ```
 
-Everything goes under `~/Atelier` by default (`--work-root` moves it all). The git clones (`--src-path`) and the
+Everything goes under `~/Akousma` by default (`--work-root` moves it all). The git clones (`--src-path`) and the
 downloads (`--downloads-path`) can be put elsewhere, e.g. on another drive.
 
 ### Dependency versions and releases

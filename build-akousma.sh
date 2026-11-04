@@ -223,7 +223,7 @@ usage() {
 Usage: ./build-akousma.sh [options]
 
 Builds Akousma with the distribution's packages. Default: Akousma master from GitHub for amd64, i386 and arm64, each
-built into an install folder and an AppImage, everything under ~/Atelier. Settings: build-settings.linux.conf next to
+built into an install folder and an AppImage, everything under ~/Akousma. Settings: build-settings.linux.conf next to
 the script (created on the first run; an option on the command line wins for that run, --save-settings keeps it).
 
 Architectures (default amd64,i386,arm64):
@@ -274,7 +274,7 @@ Dependencies:
 
 Folders (placeholders in the settings file: {WORK_ROOT} {PROJECT_ROOT} {DOWNLOADS_PATH} {BUILD_PATH} {ARCH}
 {BUILD_TYPE}; {ARCH} is x86_64, i686 or aarch64):
-  --work-root DIR         everything (default ~/Atelier)
+  --work-root DIR         everything (default ~/Akousma)
   --project-root DIR      default {WORK_ROOT}/data/projects/akousma
   --downloads-path DIR    downloads (default {PROJECT_ROOT}/linux_/downloads)
   --src-path DIR          git clones: akousma, kdsingleapplication (default {DOWNLOADS_PATH})
@@ -304,7 +304,7 @@ readonly SETTING_KEYS=(ARCHS WORK_ROOT PROJECT_ROOT DOWNLOADS_PATH SRC_PATH BUIL
 # shellcheck disable=SC2088 # "~" is kept in the file and expanded by expand_home
 declare -A DEFAULTS=(
   [ARCHS]="$DEFAULT_ARCHS"
-  [WORK_ROOT]="~/Atelier"
+  [WORK_ROOT]="~/Akousma"
   [PROJECT_ROOT]="{WORK_ROOT}/data/projects/akousma"
   [DOWNLOADS_PATH]="{PROJECT_ROOT}/linux_/downloads"
   [SRC_PATH]="{DOWNLOADS_PATH}"
