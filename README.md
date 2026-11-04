@@ -5,7 +5,8 @@ Build tools for [Akousma](https://github.com/Genki-jp0/Akousma) on Windows and L
 * Windows: `Build-Akousma.ps1` builds every dependency with Visual Studio 2022 or 2026 (MSVC), Akousma itself and the
   `AkousmaSetup-*.exe` installer in one run, for x64, x86 and arm64 (arm64 is cross-compiled on an x64 PC).
 * Linux: `build-akousma.sh` builds Akousma with the libraries of your distribution and makes an install folder, an
-  AppImage and, on request, a `.deb` or `.rpm`.
+  AppImage and, on request, a `.deb` or `.rpm`, for amd64, i386 and arm64 (the machine's own architecture natively,
+  the others in containers).
 
 Based on [strawberry-msvc-build-tools](https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools)
 (at d7e0c51) by Jonas Kvinge; Akousma is based on
@@ -118,6 +119,15 @@ KDSingleApplication (v1.2.1, static) from source first, as upstream Strawberry's
 * a native package on request: `.deb` with Akousma's `debian/` (dpkg-buildpackage), `.rpm` with Akousma's spec
   (rpmbuild)
 
+for each architecture in `ARCHS`: amd64, i386 and arm64 by default, like the Windows script's x64, x86 and arm64.
+The machine's own architecture is built natively, as above. Each other one is built by the same script inside a
+container (podman, or docker) of a distribution that has the packages for that architecture: the same distribution
+release as the machine when it has an image for it (Ubuntu 24.04 arm64 on Ubuntu 24.04, Fedora 43 aarch64 on Fedora
+43), else Debian 13, the one distribution that still builds Qt 6 for i386. i386 runs on an amd64 machine as it is;
+arm64 runs under qemu-user (binfmt_misc), which is slow (hours for a first build). Each architecture has its own
+folders (`build_x86_64_release`, `build_i686_release`, `build_aarch64_release`, ...); a `.deb` or `.rpm` that an
+architecture's distribution can't make (an i386 `.rpm`: there is no i686 Fedora) is left out with a warning.
+
 Supported: Debian / Ubuntu (apt), Fedora (dnf), Arch Linux (pacman), openSUSE (zypper); see "Status".
 
 * `build-akousma.sh`: the script. `./build-akousma.sh --help` lists every option.
@@ -133,10 +143,19 @@ bash 4.4+, git and sudo. Everything else comes from the distribution's packages:
 ./build-akousma.sh --install-deps      # install the missing packages (sudo; the command is shown first)
 ```
 
+For the other architectures: podman (or a working docker) and, for arm64 on an amd64 machine, qemu-user-static.
+`--install-deps` installs both (podman only when no engine works) and registers qemu in binfmt_misc. The build image
+of each architecture (`localhost/akousma-build:<arch>-<base image>`, its packages installed) is made by the first build
+that needs it; `--update-images` makes it again with the newest packages. When something is missing, the script
+builds the architectures it can, then stops with an error naming the others and the fix; `--arch amd64` builds only
+the machine's own architecture.
+
 ### Building
 
 ```sh
-./build-akousma.sh                                  # Akousma master: install folder + AppImage
+./build-akousma.sh                                  # Akousma master for amd64, i386, arm64: install folder + AppImage
+./build-akousma.sh --arch amd64                     # only amd64, this run (--save-settings: from now on)
+./build-akousma.sh --arch amd64,i386                # amd64 and i386
 ./build-akousma.sh --deb                            # ... and a .deb (Debian / Ubuntu)
 ./build-akousma.sh --rpm                            # ... and an .rpm (Fedora / openSUSE)
 ./build-akousma.sh --outputs install                # only the install folder
@@ -144,7 +163,8 @@ bash 4.4+, git and sudo. Everything else comes from the distribution's packages:
 ./build-akousma.sh --source ~/src/Akousma           # a local checkout, uncommitted changes included
 ./build-akousma.sh --build-type debug               # debug build (its own folders)
 ./build-akousma.sh --list                           # what would be built and why; builds nothing
-./build-akousma.sh --dry-run                        # settings, folders, source, packages, steps; changes nothing
+./build-akousma.sh --dry-run                        # settings, folders, source, packages, steps of each
+                                                    # architecture; changes nothing
 ```
 
 A branch is built at `origin/<branch>` right after a fetch, never at a stale local branch. A second run with nothing
@@ -153,17 +173,19 @@ only what changed. `--force` builds anyway, `--clean` starts the CMake build fol
 
 Output, release build with the default folders (`~/Atelier`):
 
-* `~/Atelier/akousma_linux_x86_64_release/bin/akousma`: the install folder
+* `~/Atelier/akousma_linux_x86_64_release/bin/akousma`: the install folder (i386: `akousma_linux_i686_release`, arm64:
+  `akousma_linux_aarch64_release`)
 * `~/Atelier/data/projects/akousma/linux_/build_x86_64_release/packages/`: `Akousma-<version>-x86_64.AppImage`,
-  `akousma_<version>-<codename>_amd64.deb`, `akousma-<version>-1.<dist>.x86_64.rpm`
+  `akousma_<version>-<codename>_amd64.deb`, `akousma-<version>-1.<dist>.x86_64.rpm` (i386: `build_i686_release`,
+  `-i686.AppImage`, `_i386.deb`; arm64: `build_aarch64_release`, `-aarch64.AppImage`, `_arm64.deb`, `.aarch64.rpm`)
 * the log: `~/Atelier/data/projects/akousma/build_linux.log`, per step: `<build folder>/logs`
 
 ### Settings and folders
 
-`build-settings.linux.conf`, next to the script, keeps your settings (folders, Akousma source, build type, outputs,
-...). The first run creates it with the defaults; `.gitignore` keeps it out of git. It is a plain `KEY=value` file
-that the script reads (it is never run). An option on the command line wins for that run; add `--save-settings` to
-write it into the file:
+`build-settings.linux.conf`, next to the script, keeps your settings (architectures, folders, Akousma source, build
+type, outputs, container engine and images, ...). The first run creates it with the defaults; `.gitignore` keeps it
+out of git. It is a plain `KEY=value` file that the script reads (it is never run). An option on the command line
+wins for that run; add `--save-settings` to write it into the file:
 
 ```sh
 ./build-akousma.sh --src-path /mnt/data/akousma/src --save-settings --dry-run   # save without building
@@ -184,13 +206,16 @@ usually not available any more. What the script can do is record and compare:
 ./build-akousma.sh --release 1.0.0                    #   whose version differs from the record
 ```
 
-`versions/linux/<release>.txt` records the Akousma commit, the distribution and its version, and the installed
-version of each dependency package (and the KDSingleApplication tag when it is built from source: that one is pinned).
+`versions/linux/<release>.txt` records the Akousma commit and, for each architecture, the distribution and its
+version (and the container base image), and the installed version of each dependency package (and the
+KDSingleApplication tag when it is built from source: that one is pinned). It is written only when every architecture
+was built.
 For a build that really matches a release, use the same distribution release and keep its packages (e.g. a container
 or VM); for a binary that runs on many distributions, ship the AppImage.
 
 ### Status
 
-Tested with Akousma master on Ubuntu 24.04 (install folder, AppImage, .deb) and Fedora 43 (install folder, .rpm):
-see "Tested" in linux/BUILD.txt. Arch Linux and openSUSE: the package names are checked against those distributions'
+Tested with Akousma master on Ubuntu 24.04 (install folder, AppImage, .deb) and Fedora 43 (install folder, .rpm),
+and the container builds of i386 and arm64 on an Ubuntu 24.04 amd64 machine with docker: see "Tested" in
+linux/BUILD.txt. Arch Linux and openSUSE: the package names are checked against those distributions'
 package databases, but the script has not been run there yet. Please report a package name that doesn't resolve.

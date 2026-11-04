@@ -2,7 +2,8 @@ Building Akousma on Linux
 =========================
 
 build-akousma.sh builds Akousma (https://github.com/Genki-jp0/Akousma) with the libraries of your distribution and
-makes an install folder, an AppImage and, on request, a .deb or .rpm. It is the Linux counterpart of
+makes an install folder, an AppImage and, on request, a .deb or .rpm, for amd64, i386 and arm64 (see
+"Architectures"). It is the Linux counterpart of
 Build-Akousma.ps1 (Windows, BUILD.txt in the repository root): same idea of settings, folders, change detection,
 --list, --dry-run and release locks, but no dependency is built, so a first build takes minutes, not hours.
 The two scripts share nothing but the repository: each has its own settings file and its own release records.
@@ -26,14 +27,29 @@ don't have them.
 The distribution is read from /etc/os-release (ID, ID_LIKE). Anything else: the script doesn't check packages, but
 still builds when the libraries are there (install them by the lists in the script).
 
+For the architectures other than the machine's own (see "Architectures"): podman or docker, and for arm64 on an
+amd64 machine (or amd64 / i386 on an arm64 one) qemu-user with its binfmt_misc registration. --install-deps installs
+them: podman (only when neither podman nor docker works) and
+  apt     qemu-user-static          (Debian 12/13, Ubuntu 24.04+)
+  dnf     qemu-user-static-aarch64  (qemu-user-static-x86 for amd64 / i386 on an arm64 machine)
+  pacman  qemu-user-static qemu-user-static-binfmt
+  zypper  qemu-linux-user
+and then makes sure the handler is registered with the F flag (systemctl restart systemd-binfmt; without systemd, e.g.
+in a container or WSL, the script writes /usr/lib/binfmt.d/qemu-<cpu>.conf to /proc/sys/fs/binfmt_misc/register
+itself, adding F when the file lacks it). Docker needs its daemon running and your user in the docker group;
+podman runs rootless and needs no setup.
+
 
 Running it
 ----------
 From the folder of the script (or anywhere: ./path/to/build-akousma.sh):
 
   ./build-akousma.sh --check-deps                 which packages are installed / missing; stops
-  ./build-akousma.sh --install-deps               installs the missing ones (sudo), then builds
-  ./build-akousma.sh                              Akousma master: install folder + AppImage
+  ./build-akousma.sh --install-deps               installs the missing ones (sudo; also podman and qemu-user-static
+                                                  for the other architectures), then builds
+  ./build-akousma.sh                              Akousma master for amd64, i386 and arm64: install folder + AppImage
+  ./build-akousma.sh --arch amd64                 only amd64 (this run; --save-settings: from now on)
+  ./build-akousma.sh --arch amd64,i386            amd64 and i386, one after the other
   ./build-akousma.sh --deb                        ... plus a .deb (apt systems)
   ./build-akousma.sh --rpm                        ... plus an .rpm (dnf / zypper systems)
   ./build-akousma.sh --native                     ... plus the package of this distribution (deb or rpm)
@@ -43,17 +59,30 @@ From the folder of the script (or anywhere: ./path/to/build-akousma.sh):
   ./build-akousma.sh --build-type debug           debug build, in its own folders
   ./build-akousma.sh --list                       what would be built and why; builds nothing
   ./build-akousma.sh --dry-run                    every resolved setting and folder, the source, the packages and the
-                                                  CMake command; changes nothing
+                                                  CMake command of each architecture; changes nothing
 
-Each run prints "Build settings: <file> (read / created with the defaults / saved ...)" first, then the packages, the
-plan ("akousma: build (akousma changed 4a123cf -> 43804f0)", "appimage: skip (unchanged)") and the steps. The output
-of each step goes to <build path>/logs/<step>.log (--verbose shows it too; the build shows its progress in 10 %
-steps). On a failure the end of that log is printed with its path. Everything the script prints is also appended to
-the run log (default ~/Atelier/data/projects/akousma/build_linux.log). --dry-run, --list and --check-deps write no log.
+Each run prints "Build settings: <file> (read / created with the defaults / saved ...)" first, then the architectures
+and how each is built, then for each architecture ("==> [2/3] i386: container (docker.io/library/debian:trixie)") the
+packages, the plan ("akousma: build (akousma changed 4a123cf -> 43804f0)", "appimage: skip (unchanged)") and the
+steps. The output of each step goes to <build path>/logs/<step>.log (--verbose shows it too; the build shows its
+progress in 10 % steps). On a failure the end of that log is printed with its path. Everything the script prints is
+also appended to the run log (default ~/Atelier/data/projects/akousma/build_linux.log), the container builds' output
+included. At the end: each architecture with ok / FAILED / not built and its time. --dry-run, --list and --check-deps
+write no log.
 
 
 Options
 -------
+Architectures (ARCHS, default amd64,i386,arm64; see "Architectures"):
+  --arch LIST            comma-separated: amd64, i386, arm64 (also x86_64 / x64, i686 / x86, aarch64). Order kept.
+  --container-engine E   podman, docker or auto (default): auto takes podman when "podman info" works, else docker.
+  --container-image A=IMAGE
+                         the base image of architecture A, repeatable (CONTAINER_IMAGES=i386=...,arm64=... in the
+                         settings file). Default: see "Architectures".
+  --container-arg ARG    an extra argument for "<engine> run" (the image setup and the build), repeatable; e.g.
+                         --container-arg=--dns=192.168.1.1. Settings file: CONTAINER_ARGS, separated by spaces.
+  --update-images        pull the base images again and make the build images again (the newest packages).
+
 Akousma source:
   --repo URL             git URL, default https://github.com/Genki-jp0/Akousma.git. Cloned to <SRC_PATH>/akousma.
   --ref REF              branch, tag or commit, default master. Each run fetches (git fetch --prune --tags) and then
@@ -91,13 +120,15 @@ Outputs (OUTPUTS, default install,appimage):
   --update-tools         download linuxdeploy and its plugins again (they are "continuous" builds).
 
 Dependencies:
-  --check-deps           list the packages of the wanted outputs, installed or missing, with the install command.
-                         Exit 1 when something is missing.
+  --check-deps           list the packages of the wanted outputs, installed or missing, with the install command;
+                         for a container architecture the container setup and the image's packages (once the image
+                         exists). Exit 1 when something is missing.
   --install-deps         install the missing packages: shows the command, then runs it with sudo (apt: apt-get update
-                         first). Without it, a run with missing packages stops and prints the command.
+                         first). Without it, a run with missing packages stops and prints the command. Also installs
+                         and registers what the container architectures need (see "Requirements").
   --yes                  with --install-deps: no questions (apt-get -y, dnf -y, zypper -n, pacman --noconfirm).
-  --freeze-deps REL      write versions/linux/REL.txt after the build (with --dry-run: without building). See
-                         "Release locks".
+  --freeze-deps REL      write versions/linux/REL.txt after the build of every architecture (with --dry-run: without
+                         building). See "Release locks".
 
 Folders (see "Folders"):
   --work-root DIR  --project-root DIR  --downloads-path DIR  --src-path DIR  --build-path DIR  --prefix DIR
@@ -111,15 +142,18 @@ Other:
 
 Build settings
 --------------
-build-settings.linux.conf keeps: WORK_ROOT, PROJECT_ROOT, DOWNLOADS_PATH, SRC_PATH, BUILD_PATH, PREFIX_PATH,
+build-settings.linux.conf keeps: ARCHS, WORK_ROOT, PROJECT_ROOT, DOWNLOADS_PATH, SRC_PATH, BUILD_PATH, PREFIX_PATH,
 OUTPUT_PATH, TOOLS_PATH, LOG_PATH, AKOUSMA_REPO, AKOUSMA_REF, AKOUSMA_SOURCE, BUILD_TYPE, OUTPUTS, JOBS, WERROR, TESTS,
-CMAKE_ARGS. (Windows' Build-Akousma.ps1 has its own build-settings.json; the two files are independent.)
+CMAKE_ARGS, CONTAINER_ENGINE, CONTAINER_IMAGES, CONTAINER_ARGS. (Windows' Build-Akousma.ps1 has its own
+build-settings.json; the two files are independent.) An older file without the new keys gets the defaults for them
+(all three architectures); --save-settings adds the keys that are missing.
 The first run creates it with the defaults (with a comment per line). For each setting the command line wins, then
 the file, then the default (a line missing from the file = the default). Command-line options are for that run only;
 --save-settings writes them into the file, keeping your other lines and comments:
 
   ./build-akousma.sh --ref my-branch                         this run only
   ./build-akousma.sh --ref my-branch --save-settings         now and from now on
+  ./build-akousma.sh --arch amd64 --save-settings --dry-run  only amd64 from now on (ARCHS=amd64)
   ./build-akousma.sh --src-path /mnt/data/src --save-settings --dry-run    save without building
 
 The file is KEY=value, one per line, # for comments, optional quotes around a value. It is parsed, never run (no
@@ -141,8 +175,13 @@ Defaults (placeholders as in the file; each location may use the ones before it)
   TOOLS_PATH      {PROJECT_ROOT}/linux_/tools            linuxdeploy-<arch>.AppImage and its plugins
   LOG_PATH        {PROJECT_ROOT}/build_linux.log
 
-{ARCH} is uname -m (x86_64, aarch64), {BUILD_TYPE} the build type. A location still at its default follows the ones it
-is made of, so WORK_ROOT=/mnt/fast/Atelier moves everything. To keep the sources on another drive:
+{ARCH} is the architecture being built, by the names AppImages use: x86_64 (amd64), i686 (i386), aarch64 (arm64);
+{BUILD_TYPE} the build type. A location still at its default follows the ones it is made of, so
+WORK_ROOT=/mnt/fast/Atelier moves everything. Downloads, the git clones and the AppImage tools are shared by the
+architectures; each has its own build tree (with its packages folder) and install folder. A BUILD_PATH or PREFIX_PATH
+you set without {ARCH} is the machine's own architecture's; the others get _<arch> appended (/mnt/build ->
+/mnt/build_i686) unless the folder name says the architecture already, so they never build into the same folder.
+An OUTPUT_PATH without {ARCH} is shared: the file names say the architecture. To keep the sources on another drive:
 --src-path /mnt/data/akousma/src (and --downloads-path) with --save-settings.
 
 Inside BUILD_PATH:
@@ -153,12 +192,14 @@ Inside BUILD_PATH:
   appimage/       AppDir and the staged GStreamer plugins
   deb/akousma/    the copy of the source dpkg-buildpackage builds in (keeps its obj-* folder between runs)
   rpmbuild/       rpmbuild's _topdir
+  home/           HOME of a container build
 
 The install folder (PREFIX_PATH) is deleted and installed again by each build, so files Akousma doesn't install any
 more don't stay behind; the script only deletes it when it made it (marker file .akousma-build-tools). An install
 folder that isn't writable (e.g. --prefix /usr/local) is installed with sudo and not deleted first. To start the
 installed build: ~/Atelier/akousma_linux_x86_64_release/bin/akousma. It uses the distribution's libraries, so it runs
-on this system only.
+on this system only. The install folder of a container architecture uses the image's libraries: it runs in that
+image (or a system of the same distribution release and architecture); ship the AppImage or the package instead.
 
 
 Packages (dependencies)
@@ -193,6 +234,70 @@ builds v1.2.1 as a static library into <BUILD_PATH>/deps and passes it to Akousm
 commit or the Qt package version changes.
 
 
+Architectures
+-------------
+ARCHS (--arch) lists the architectures to build, by their Debian names: amd64, i386 and arm64 by default, like
+Build-Akousma.ps1's x64, x86 and arm64. They are built one after the other, in the order given, each in its own
+folders. The run of each is the same script with the same settings and options (--arch-build <arch>, internal), and
+every one builds the same Akousma commit: the run you start resolves (and fetches) it once.
+
+The machine's own architecture (uname -m) is built natively, as described in the rest of this file. Each other one is
+built in a container, because a distribution's packages only exist for its own architecture on its own release:
+  - the script makes a build image per architecture once, localhost/akousma-build:<arch>-<base image>: it pulls the
+    base image for that platform (podman/docker pull --platform linux/386 or linux/arm64), checks that its programs
+    run here, runs itself in it as root with --image-setup (installs every package group of that distribution: build,
+    runtime, tests, appimage and deb or rpm, as --install-deps would) and commits the container. The image is made
+    again when the base image or the package lists in the script change, or with --update-images (newest packages).
+    Like on the machine itself, the packages in an image are only updated when you ask for it; a new image changes
+    the package versions, so the next build rebuilds (see "Change detection").
+  - then it runs the build in a new container of that image: "<engine> run --rm --platform ... --network host
+    --security-opt label=disable" with every folder the build uses mounted at the same path (the build tree, install
+    folder, packages folder, tools, git clones, --source; the script's folder and the settings file read-only), so
+    paths, stamps and logs are the same inside and out. It runs as you (podman: --userns=keep-id; docker: --user
+    <uid>:<gid>), so the files it makes are yours; HOME is <build path>/home. The proxy variables (http_proxy, ...)
+    are passed in; --container-arg adds anything else (a CA certificate, --dns, ...). i386 runs under "setarch i686",
+    so uname -m says i686 as CMake and the AppImage tools expect. Ctrl-C stops the container.
+How each architecture's programs run on the machine:
+  i386 on amd64     natively (an amd64 kernel runs 32-bit programs): about as fast as the amd64 build
+  arm64 on amd64    qemu-user (qemu-aarch64 via binfmt_misc, F flag): every compiler run is emulated, roughly 5 to 10
+                    times slower; a first build takes hours, later ones only recompile what changed
+  amd64, i386 on arm64   qemu-user (qemu-x86_64, qemu-i386), the same way
+The base images (CONTAINER_IMAGES or --container-image arch=image chooses another):
+  this machine          i386                                 the other one(s)
+  Debian 12/13 (...)    docker.io/library/debian:<codename>  docker.io/library/debian:<codename>
+  Ubuntu 24.04 (...)    docker.io/library/debian:trixie      docker.io/library/ubuntu:<VERSION_ID>
+  Fedora 43 (...)       docker.io/library/debian:trixie      registry.fedoraproject.org/fedora:<VERSION_ID>
+  openSUSE Tumbleweed   docker.io/library/debian:trixie      registry.opensuse.org/opensuse/tumbleweed:latest
+  anything else         docker.io/library/debian:trixie      docker.io/library/debian:trixie
+The other architectures get the machine's distribution release where it has an image for them, so their packages and
+outputs match the machine's build (a Fedora machine gets an aarch64 .rpm). i386 always gets Debian, because:
+  - Debian 13 (trixie) still builds every package Akousma needs for i386: Qt 6.8.2, KDSingleApplication 1.1.0,
+    LayerShellQt 6.3, TagLib 2.0, GStreamer 1.26, CMake 3.31, gtest (checked 2026-11 in a linux/386 trixie container).
+    Debian 12 (bookworm) has Qt 6.4.2 for i386 (Akousma's minimum) but KDSingleApplication only from source.
+  - Ubuntu has no i386 Qt 6 and no i386 image; Fedora has no i686 image (its i686 packages are multilib only); the
+    Arch Linux image is amd64 only, openSUSE has no i586 Tumbleweed image.
+Why containers, not cross-compiling: Debian's multiarch could cross-compile on a Debian machine, but only on Debian of
+the same release, and the AppImage tools (linuxdeploy and its Qt plugin) have to run the target architecture's
+programs anyway. Containers work the same on every distribution, need no root (podman) and leave the machine's
+packages alone.
+
+Outputs: each architecture makes the outputs of OUTPUTS: install folder, AppImage (Akousma-<version>-i686.AppImage,
+...-aarch64.AppImage; with the AppImage tools of that architecture), and .deb / .rpm when its distribution can make
+them. An output its distribution can't make is left out for that architecture only, with a WARNING (".deb packages
+are made on Debian / Ubuntu ..."), and the summary says so ("ok (not made here: rpm)"): e.g. --rpm on Fedora gives an
+x86_64 and an aarch64 .rpm but no i686 one (there is no i686 Fedora); --deb on Fedora gives the i386 .deb only.
+--native is the package format of the distribution each architecture is built on.
+
+When an architecture can't be built: before building, the script checks the container engine ("podman info" /
+"docker info") and, for each architecture that needs qemu, its binfmt_misc handler. An architecture whose
+prerequisite is missing is not tried (the others are built), and so is one whose image can't be made (the base image
+can't be pulled, or its programs don't run: "exec format error"). The run then ends with exit code 1: a summary that
+names each architecture that wasn't built and why, the command that fixes it (--install-deps, and what it runs), and
+"--arch <this machine's> builds only this machine's architecture". This is an error, not a warning, on purpose: the
+default is all three, and a run that quietly made only amd64 would look like a complete release. --dry-run and --list
+show the same problems but end with 0; --check-deps ends with 1.
+
+
 Change detection
 ----------------
 <BUILD_PATH>/stamps/build.stamp records what the last successful build was made of:
@@ -211,6 +316,8 @@ to an unchanged build only makes the .deb.
   --force    builds and makes the outputs anyway (CMake still only recompiles what changed)
   --clean    deletes the CMake build folder first
 A failed build leaves no stamp, so the next run builds again.
+Each architecture has its own stamps (in its build tree) and is decided on its own: the packages of a container
+architecture are the ones in its image, so a new image (--update-images) rebuilds that architecture only.
 
 
 AppImage
@@ -220,7 +327,9 @@ linuxdeploy-plugin-gstreamer, downloaded into TOOLS_PATH the first time (--updat
   linuxdeploy-<arch>.AppImage            .../linuxdeploy/releases/download/continuous/
   linuxdeploy-plugin-qt-<arch>.AppImage  .../linuxdeploy-plugin-qt/releases/download/continuous/
   linuxdeploy-plugin-gstreamer.sh        raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/master/
-The linuxdeploy AppImage contains the AppImage output plugin and appimagetool. To use other builds of these tools,
+<arch> is x86_64, i386 or aarch64 (linuxdeploy's names; the AppImage itself is named x86_64, i686 or aarch64). The
+tools of a container architecture run in its container (arm64 under qemu). The linuxdeploy AppImage contains the
+AppImage output plugin and appimagetool. To use other builds of these tools,
 put them into TOOLS_PATH under these names (the script doesn't download a file that is there).
 Steps:
   1. cmake --install into <BUILD_PATH>/appimage/AppDir/usr (a separate install with prefix /usr inside the AppDir).
@@ -278,19 +387,26 @@ distributions don't keep old versions. So a release lock records instead of pins
   ./build-akousma.sh --ref v1.0.0                                 later: 1.0.0 again
   ./build-akousma.sh --release 1.0.0                              the same, by the lock's name
 
-versions/linux/<release>.txt (KEY=value) holds akousma_commit, the build tools commit, the date, the distribution
-(ID, VERSION_ID, PRETTY_NAME), the package manager, the arch, build type and CMake arguments, the KDSingleApplication
-tag and commit when it was built from source, the sha256 of the AppImage tools, and pkg.<name>=<version> for every
-dependency package that was installed. An existing file is never replaced (delete it to freeze again). A release with
-uncommitted local changes can't be frozen.
+versions/linux/<release>.txt (KEY=value) holds akousma_commit, the build tools commit, the date and archs (the
+architectures it covers), then one section per architecture, its keys prefixed with the architecture
+(amd64.distro=ubuntu, i386.pkg.qt6-base-dev=6.8.2+dfsg-9+deb13u2): the distribution (ID, VERSION_ID, PRETTY_NAME) it
+was built on, the container base image and its digest (container architectures), the package manager, build type and
+CMake arguments, the KDSingleApplication tag and commit when it was built from source, the sha256 of the AppImage
+tools, and pkg.<name>=<version> for every dependency package that was installed (in the image, for a container
+architecture). Each architecture's run writes its section to <build path>/stamps/freeze-<release>.part; the run you
+started writes the file when every architecture of ARCHS was built (else it says which weren't and writes nothing:
+build them, or freeze with --arch naming the ones the release has). An existing file is never replaced (delete it to
+freeze again). A release with uncommitted local changes can't be frozen. A lock without sections (one architecture,
+from before) is read as the section of its arch=.
 
 A lock is used when: --release REL; --ref REL or --ref vREL and versions/linux/REL.txt exists; or the commit being
-built is the one a lock records. Then the script
+built is the one a lock records. Then the script, for each architecture,
   - builds the lock's akousma_commit (if the tag points elsewhere now, it warns and still builds the recorded commit),
   - builds the recorded KDSingleApplication tag (when it comes from source),
   - warns when the distribution or its version differs from the lock's,
-  - compares every pkg.<name> with what is installed and warns about each difference ("package qt6-base-dev:
-    6.4.2+dfsg-21.1build6 now, 6.4.2+dfsg-21.1build5 in the lock").
+  - compares every pkg.<name> of its section with what is installed (in its image) and warns about each difference
+    ("package qt6-base-dev: 6.4.2+dfsg-21.1build6 now, 6.4.2+dfsg-21.1build5 in the lock"),
+  - warns when the lock has no section for it (and still builds the lock's commit).
 It does not downgrade packages and does not stop. For a build that matches a release exactly, keep a container or VM
 of the distribution release it was frozen on; for binaries that run on many distributions, ship the AppImage.
 
@@ -323,3 +439,28 @@ Fedora 43 (chroot of the official container image; Qt 6.10.3, GCC 15.3, KDSingle
     fixes above; installed with dnf, /usr/bin/akousma --version works), a second run skipping everything
 Not run: Arch Linux and openSUSE (their package names were checked against the official package databases:
 archlinux.org and the Tumbleweed repository metadata), Debian, aarch64, --tests.
+
+Architectures, on 2026-11-04, Akousma master 43804f0, on an Ubuntu 24.04.5 amd64 machine (4 CPUs, a container itself)
+with docker 29.9 (no podman), as root. The base images came from mirror.gcr.io (--container-image; Docker Hub was
+rate-limited there), and a CA certificate was passed in with --container-arg (that network's proxy):
+  - i386, Debian 13 container (Qt 6.8.2, GCC 14, KDSingleApplication 1.1.0 and LayerShellQt 6.3 from Debian): image
+    made by the script, full build, install folder and .deb (debian/rules, -DBUILD_WERROR=ON: no warnings). The
+    binary is "ELF 32-bit ... Intel 80386"; bin/akousma --version and, after apt install of the .deb in the image,
+    /usr/bin/akousma --version print "Akousma 1.0.0". A second run skips everything (3 s).
+  - arm64, Ubuntu 24.04 container under qemu-user: --install-deps installed qemu-user-static and registered
+    qemu-aarch64 itself (no systemd there; flags OPF); the image (apt under qemu: about 45 min), KDSingleApplication
+    from source, then Akousma's build: stopped after 660 of 1410 steps (45 min, with other builds running; the
+    objects are "ELF 64-bit ... ARM aarch64"), so the arm64 install folder and .deb were not made. A first arm64
+    build takes hours this way; later ones are incremental.
+  - amd64 natively in the same run as the others; a default run (all three) then skipped amd64 and i386 and started
+    arm64; Ctrl-C there stopped the container and the run (exit 130, no container left).
+  - an architecture that can't be built: --container-engine podman (not installed) -> both container architectures
+    "not built", the fix printed, exit 1; before qemu was set up, --dry-run marked arm64 "can't be built" with the
+    fix (--install-deps and the apt-get command) and showed the plan of the others.
+  - --check-deps (host packages missing: exit 1; the i386 image's packages listed; arm64 "image not made yet"),
+    --dry-run and --list per architecture, --freeze-deps --dry-run (an i386 section with the image digest) and
+    --release with it (packages compared; arm64 reported without image), the settings round trip (ARCHS saved as
+    amd64,i386 from x86_64,i686,x86_64; --container-image replacing one entry; a file without the new keys).
+Not run: podman, the AppImage of i386 / arm64 (GitHub release downloads were blocked there, so linuxdeploy could not
+be fetched; the tool names follow linuxdeploy's i386 / aarch64 assets), a Fedora or openSUSE machine's containers, an
+arm64 machine.
