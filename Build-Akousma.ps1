@@ -532,6 +532,15 @@ function Get-DepsPatchKey([string]$name, [string[]]$keys) {
   }
   return $best
 }
+function Get-DepsChecksumKey([string]$name, [string[]]$keys) {
+  # The version a checksum goes with: ZLIB_SHA256SUM -> ZLIB_VERSION, QTBASE_SHA256SUM -> QT_VERSION,
+  # FFTW_MINGW_X86_64_RELEASE_SHA256SUM -> FFTW_MINGW_VERSION.
+  return Get-DepsPatchKey (($name -replace '_SHA256SUM$', '').ToLowerInvariant().Replace('_', '-')) $keys
+}
+function Get-DepsVersionCount($versions) {
+  # The versions in a set, without the checksums (<PACKAGE>_SHA256SUM) that go with them.
+  return @($versions.Keys | Where-Object { $_ -notlike '*_SHA256SUM' }).Count
+}
 function Get-DepsPatchFiles([string[]]$keys) {
   # The build tools' patches\*.patch and the local patches (local-patches\, -GstGoodPatch), with the version each goes with.
   $list = [System.Collections.Generic.List[object]]::new()
@@ -666,6 +675,8 @@ function Resolve-DepsVersions {
     Notes = [System.Collections.Generic.List[string]]::new(); Patches = $patches; Lock = $null
   }
   $lockPatches = @{}
+  # The versions files a checksum can come from, in this order: upstream's (latest) or the lock, then the pinned one.
+  $checksumFrom = [System.Collections.Generic.List[object]]::new()
   foreach ($k in $keys) { $r.Versions[$k] = $base.Versions[$k] }
   $locks = @(Get-DepsLocks)
   $mode = $requested
@@ -704,9 +715,11 @@ function Resolve-DepsVersions {
     $r.Upstream = $upstream.Label
     $r.Mode = 'latest'
     $r.Label = "latest ($($upstream.Label))"
+    $checksumFrom.Add($up.Versions)
     $patchCache = @{}
     foreach ($k in $keys) {
       if ($k -like '*_YEAR' -and $base.Versions.Contains(($k -replace '_YEAR$', '_VERSION'))) { continue }   # goes with its _VERSION
+      if ($k -like '*_SHA256SUM') { continue }   # goes with its package's version, below
       if (-not $up.Versions.Contains($k) -or $up.Versions[$k] -eq $base.Versions[$k]) { continue }
       $new = $up.Versions[$k]
       if ($new -notmatch '^[0-9A-Za-z][0-9A-Za-z._+-]*$') { $r.Warnings.Add("$k stays $($base.Versions[$k]): upstream's value '$new' is not a version."); continue }
@@ -760,9 +773,10 @@ function Resolve-DepsVersions {
     $r.Mode = 'lock'
     $r.Lock = $lock.Name
     $lockPatches = $lock.Data.Patches
+    $checksumFrom.Add($lock.Data.Versions)
     $r.Label = "lock $($lock.Name) (versions\$($lock.Name).txt)"
     foreach ($k in $lock.Data.Versions.Keys) { $r.Versions[$k] = $lock.Data.Versions[$k] }
-    $missing = @($keys | Where-Object { -not $lock.Data.Versions.Contains($_) })
+    $missing = @($keys | Where-Object { $_ -notlike '*_SHA256SUM' -and -not $lock.Data.Versions.Contains($_) })
     if ($missing.Count) { $r.Warnings.Add("versions\$($lock.Name).txt has no $($missing -join ', '): using the pinned versions for those (added to the build tools after the lock was frozen).") }
     foreach ($g in $lock.Data.GitRefs.Keys) { $r.GitRefs[$g] = $lock.Data.GitRefs[$g] }
     $frozenWith = $lock.Data.Meta['build-tools-commit']
@@ -787,7 +801,24 @@ function Resolve-DepsVersions {
     if (-not $key.EndsWith('_VERSION')) { $key = "${key}_VERSION" }
     $r.Versions[$key] = [string]$VersionOverrides[$k]
   }
+  # Checksums (<PACKAGE>_SHA256SUM, in the versions files since upstream 56af2c1): a checksum is for one version's archive,
+  # so each one comes from a versions file that has the version used here. A version no file has a checksum for (an
+  # override, a lock from before the checksums, a package upstream doesn't have) gets none: its download is not verified,
+  # as before.
+  $checksumFrom.Add($base.Versions)
+  $unverified = @()
+  foreach ($k in @($r.Versions.Keys | Where-Object { $_ -like '*_SHA256SUM' })) {
+    $versionKey = Get-DepsChecksumKey $k @($r.Versions.Keys)
+    if (-not $versionKey) { continue }
+    $checksum = $null
+    foreach ($from in $checksumFrom) {
+      if ($from.Contains($k) -and $from.Contains($versionKey) -and $from[$versionKey] -eq $r.Versions[$versionKey]) { $checksum = $from[$k]; break }
+    }
+    if ($checksum) { $r.Versions[$k] = $checksum } else { $r.Versions.Remove($k); $unverified += $k }
+  }
+  if ($unverified.Count) { $r.Notes.Add("No checksum for the version used (the download is not verified): $($unverified -join ', ').") }
   foreach ($k in $r.Versions.Keys) {
+    if ($k -like '*_SHA256SUM') { continue }
     $old = if ($base.Versions.Contains($k)) { $base.Versions[$k] } else { '(none)' }
     if ($old -ne $r.Versions[$k]) { $r.Changes.Add([pscustomobject]@{ Key = $k; Old = $old; New = $r.Versions[$k] }) }
   }
@@ -804,10 +835,10 @@ function Resolve-DepsVersions {
 function Write-DepsSummary($r) {
   Write-Host "Dependency versions: $($r.Label)  [$($r.Why)]" -ForegroundColor Cyan
   if ($r.Changes.Count) {
-    Write-Host "  $($r.Changes.Count) of $($r.Versions.Count) differ from the pinned ones ($($r.BaseName)):" -ForegroundColor Cyan
+    Write-Host "  $($r.Changes.Count) of $(Get-DepsVersionCount $r.Versions) differ from the pinned ones ($($r.BaseName)):" -ForegroundColor Cyan
     foreach ($c in $r.Changes) { Write-Host ("    {0,-28} {1} -> {2}" -f $c.Key, $c.Old, $c.New) -ForegroundColor Cyan }
   }
-  else { Write-Host "  all $($r.Versions.Count) are the pinned ones ($($r.BaseName))" -ForegroundColor Cyan }
+  else { Write-Host "  all $(Get-DepsVersionCount $r.Versions) are the pinned ones ($($r.BaseName))" -ForegroundColor Cyan }
   foreach ($g in $r.GitRefs.Keys) { Write-Host ("    {0,-28} git {1}" -f $g, $r.GitRefs[$g]) -ForegroundColor Cyan }
   foreach ($n in $r.Notes) { Write-Host "  $n" -ForegroundColor DarkCyan }
   foreach ($w in $r.Warnings) { Write-Warning $w }
@@ -859,7 +890,7 @@ function Save-DepsLock($r, [string]$release) {
   }
   New-Item -ItemType Directory -Force -Path $DepsLockDir | Out-Null
   [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-  Write-Host "-FreezeDeps ${name}: wrote $path ($($r.Versions.Count) versions, $($r.GitRefs.Count) git commits). Commit it; builds of Akousma $name use it from now on." -ForegroundColor Green
+  Write-Host "-FreezeDeps ${name}: wrote $path ($(Get-DepsVersionCount $r.Versions) versions, $($r.GitRefs.Count) git commits). Commit it; builds of Akousma $name use it from now on." -ForegroundColor Green
 }
 if ($deps_resolved.Count) {
   # An architecture of a multi-architecture run: the run that started it resolved the versions.
@@ -1756,6 +1787,26 @@ function Invoke-NMake {
   }
 }
 
+function Clear-VersionChecksums {
+  # A checksum in the versions file (<PACKAGE>_SHA256SUM) is for the version that file gives. When a version is changed after
+  # the file was read (the CI versions, an override), the checksums that go with it no longer apply: without them the download
+  # is not verified (GetPackageChecksum). The names differ where one version is for several packages.
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)][string]$version_variable)
+  $name = $version_variable -replace '_version$', ''
+  $packages = switch ($name) {
+    'qt'         { 'qtbase', 'qttools', 'qtimageformats', 'qtsvg' }
+    'gstreamer'  { 'gstreamer', 'gst_plugins_base', 'gst_plugins_good', 'gst_plugins_bad', 'gst_plugins_ugly', 'gst_libav' }
+    'dlfcn'      { 'dlfcn_win32' }
+    'peparse'    { 'pe_parse' }
+    'fftw_mingw' { 'fftw_mingw_x86_64_debug', 'fftw_mingw_x86_64_release' }
+    default      { $name }
+  }
+  foreach ($package in $packages) {
+    Remove-Variable -Name "${package}_sha256sum" -Scope Global -ErrorAction SilentlyContinue
+  }
+}
+
 function Import-CIVersions {
   # Reads "<name>_version: 'x'" lines from strawberry-msvc-dependencies' build.yaml.
   # Only variables that already exist in the versions file are overridden.
@@ -1776,6 +1827,7 @@ function Import-CIVersions {
     $old = Get-Variable -Name $var -Scope Global -ValueOnly -ErrorAction SilentlyContinue
     if ($null -ne $old -and $old -ne $m.Groups[2].Value) {
       Set-Variable -Name $var -Value $m.Groups[2].Value -Scope Global
+      Clear-VersionChecksums -version_variable $var
       Write-Host "  CI version: $var $old -> $($m.Groups[2].Value)" -ForegroundColor DarkCyan
     }
   }
@@ -1794,6 +1846,12 @@ Write-Host ""
 $script_path = Split-Path -Parent $MyInvocation.MyCommand.Path
 $version_file = if ($versions_file) { $versions_file } else { Join-Path $script_path "StrawberryPackageVersions.txt" }
 $patch_path = Join-Path $script_path "patches"
+
+# patched: the versions are global variables, and this part runs in the session the script was started in. A checksum left
+# there by an earlier run must not be used for a version this versions file has no checksum for.
+foreach ($v in @(Get-Variable -Name '*_sha256sum' -Scope Global -ErrorAction SilentlyContinue)) {
+  Remove-Variable -Name $v.Name -Scope Global -ErrorAction SilentlyContinue
+}
 
 if (Test-Path $version_file) {
   Get-Content $version_file | ForEach-Object {
@@ -1824,6 +1882,10 @@ foreach ($k in $version_overrides.Keys) {
   $name = ([string]$k).ToLower()
   if (-not $name.EndsWith("_version")) { $name = "${name}_version" }
   Write-Host "  Override: $name = $($version_overrides[$k])" -ForegroundColor DarkCyan
+  # The versions file has the override already when the preparation part wrote it (with the checksum, if one is known).
+  if ([string](Get-Variable -Name $name -Scope Global -ValueOnly -ErrorAction SilentlyContinue) -ne [string]$version_overrides[$k]) {
+    Clear-VersionChecksums -version_variable $name
+  }
   Set-Variable -Name $name -Value ([string]$version_overrides[$k]) -Scope Global
 }
 # Versions files from before upstream 2d9ce79 (e.g. -VersionsFile) call the MinGW-W64 FFTW package version FFTW_VERSION.
@@ -2804,7 +2866,11 @@ function GetPackageChecksum {
   $checksum_variable = "$($checksum_name.ToLower().Replace('-', '_'))_sha256sum"
   $checksum = Get-Variable -Name $checksum_variable -Scope Global -ValueOnly -ErrorAction SilentlyContinue
   if (-not $checksum) {
-    throw "Missing SHA256 checksum $($checksum_variable.ToUpper()) for package '$package_name' in $version_file"
+    # patched: not an error here. The versions file has no checksum for a package upstream doesn't have (libcdio, qtsvg) and
+    # for a version that is not the one its checksum was for (-VersionOverrides, the CI versions, a lock from before the
+    # checksums): that download is not verified, as before upstream 56af2c1.
+    Write-Host "No SHA256 checksum ($($checksum_variable.ToUpper())) for package '$package_name' at this version: the download is not verified" -ForegroundColor DarkYellow
+    return $null
   }
   if ($checksum -notmatch '^[0-9a-fA-F]{64}$') {
     throw "Invalid SHA256 checksum $($checksum_variable.ToUpper()) for package '$package_name' in $version_file"

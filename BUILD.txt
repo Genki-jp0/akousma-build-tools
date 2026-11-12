@@ -371,6 +371,14 @@ changed since it was frozen. The versions a build used are in <BuildPath>\deps-v
 architectures in one run all get the versions resolved at its start; for an arm64 cross-compile started separately
 later, use the same -Deps lock (or pinned), so the x64 prefix it uses has the same versions.
 
+Checksums: since upstream 56af2c1 the versions files also hold the SHA256 of each package's archive (ZLIB_SHA256SUM,
+QTBASE_SHA256SUM, ...). A download, and a file that is already in -DownloadsPath, is used only when it matches; one
+that doesn't is downloaded again, from the package's mirrors and upstream's packages server too. A checksum goes with
+its version: latest takes upstream's checksum with upstream's version, a lock keeps its own, and they are not counted
+or listed with the versions that differ. A version that has no checksum is downloaded without the check, as before,
+and the run says which: the packages upstream doesn't have (libcdio, qtsvg), a -VersionOverrides version, the CI
+versions (-CiVersionsRef / -CiVersionsFile), a lock frozen before the checksums.
+
 Releases:
   .\Build-Akousma.ps1 -AkousmaRef v1.0.0 -FreezeDeps 1.0.0    build 1.0.0 with the latest versions and write
                                                               versions\1.0.0.txt; commit that file
