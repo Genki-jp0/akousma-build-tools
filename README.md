@@ -9,7 +9,7 @@ Build tools for [Akousma](https://github.com/Genki-jp0/Akousma) on Windows and L
   the others in containers).
 
 Based on [strawberry-msvc-build-tools](https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools)
-(at d7e0c51) by Jonas Kvinge; Akousma is based on
+(at 56af2c1) by Jonas Kvinge; Akousma is based on
 [Strawberry Music Player](https://github.com/strawberrymusicplayer/strawberry).
 Licensed under the GPL version 3 (see `COPYING`).
 

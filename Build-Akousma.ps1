@@ -468,11 +468,11 @@ if (-not $arch_build) {
 # are started: every architecture (and the x64 build an arm64 cross-compile runs) gets the same versions, even when upstream
 # moves while the first one builds. The build part reads the result as its versions file (<BuildPath>\deps-versions.txt).
 # ---------------------------------------------------------------------
-$MsvcToolsBase = "d7e0c51d74d31abe94efe162ad246e36c8e10705"   # upstream 2026-10-30 'Update glib_networking'
+$MsvcToolsBase = "56af2c1ebeb43d8f7bc11f85c70010fced39f678"   # upstream 2026-11-10 'Fix build directory'
 $UpstreamToolsRepo = 'https://github.com/strawberrymusicplayer/strawberry-msvc-build-tools'
 # sha256 (LF line endings) of upstream's StrawberryMSVCBuild.ps1 at $MsvcToolsBase. -Deps latest compares upstream's current
 # one with it: a difference means upstream changed recipes since, which the latest versions may need.
-$UpstreamBaseScriptSha256 = 'c92ace90ec3904e6b58b22118fa4e47dcc8abcab22400a8ba45e33a9b9364700'
+$UpstreamBaseScriptSha256 = '24d2acde28e3ed2c7f827b7c8a656a74c989d4e723687a504785ccaea78532a1'
 $DepsLockDir = Join-Path $PSScriptRoot 'versions'
 # Dependencies built from a git clone's default branch (the URLs of GetGitRepoUrls below). -FreezeDeps records their commits
 # in the lock, and a build from the lock checks those out. (ffmpeg is not here: its branch follows FFMPEG_VERSION.)

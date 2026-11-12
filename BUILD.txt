@@ -1,7 +1,7 @@
 Building Akousma for Windows (MSVC)
 ===================================
 
-This repository is upstream strawberry-msvc-build-tools @ d7e0c51 (2026-10-30 "Update glib_networking") with one build
+This repository is upstream strawberry-msvc-build-tools @ 56af2c1 (2026-11-10 "Fix build directory") with one build
 script for Akousma on Windows:
 
   Build-Akousma.ps1         the build script. It prepares the build environment and builds the dependencies, Akousma
@@ -13,7 +13,7 @@ script for Akousma on Windows:
                             patches in local-patches\, never here.
   CopyDLLDependencies.ps1   upstream's helper that collects the DLLs for the installer
   StrawberryPackageVersions.txt
-                            the pinned dependency versions: upstream's file (name kept) at d7e0c51, plus libcdio
+                            the pinned dependency versions: upstream's file (name kept) at 56af2c1, plus libcdio
   versions\                 the dependency versions of each Akousma release (1.0.0.txt, ...; see "Dependency versions")
 
 Linux: build-akousma.sh, described in linux\BUILD.txt. It has its own settings file (build-settings.linux.conf) and
@@ -346,11 +346,11 @@ package is rebuilt. (The first run with the ffmpeg version in its stamp rebuilds
 
 Dependency versions
 -------------------
-Upstream (strawberry-msvc-build-tools) moves its dependency versions all the time: .github/scripts/update.sh looks up
+Upstream (strawberry-msvc-build-tools) moves its dependency versions all the time: scripts/update.sh looks up
 each package's newest release every 15 minutes and opens a pull request per update ("Update expat"), which is merged
 only when upstream's CI (x64 and arm64, debug and release) has built it. So upstream master's
 StrawberryPackageVersions.txt is the newest set that is known to build. This repository keeps its own copy, as of
-d7e0c51 (the pinned versions), and -Deps picks which versions a run builds:
+56af2c1 (the pinned versions), and -Deps picks which versions a run builds:
 
   auto (default)   a release build uses the release's lock, every other build the latest versions:
                      -AkousmaRef 1.0.0 / v1.0.0       versions\1.0.0.txt, when it exists
@@ -366,7 +366,7 @@ d7e0c51 (the pinned versions), and -Deps picks which versions a run builds:
   1.0.0            versions\1.0.0.txt (a lock; -Deps <release>)
 -VersionOverrides win over all of them. Every run prints the versions that differ from the pinned ones and warns about
 patches that were written for another version: a local patch for a package whose version changes, upstream's
-StrawberryMSVCBuild.ps1 having changed since d7e0c51 (recipes the new versions may need), a lock's patches having
+StrawberryMSVCBuild.ps1 having changed since 56af2c1 (recipes the new versions may need), a lock's patches having
 changed since it was frozen. The versions a build used are in <BuildPath>\deps-versions.txt (same format). Several
 architectures in one run all get the versions resolved at its start; for an arm64 cross-compile started separately
 later, use the same -Deps lock (or pinned), so the x64 prefix it uses has the same versions.
