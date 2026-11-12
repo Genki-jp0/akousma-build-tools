@@ -937,15 +937,19 @@ if ($ArchList.Count -gt 1) {
     $a = $ArchList[$i]
     Write-Host "`n==> [$($i + 1)/$($ArchList.Count)] $a" -ForegroundColor Magenta
     $forward['Arch'] = $a
-    # The parameters travel as JSON (hashtables such as -VersionOverrides can't be passed on a command line).
-    $json = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($forward | ConvertTo-Json -Compress -Depth 8)))
-    $command = "`$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$json')) | ConvertFrom-Json -AsHashtable; " +
+    # The parameters travel as JSON (hashtables such as -VersionOverrides can't be passed on a command line), in an environment
+    # variable the new process reads and removes before it starts the script. Not inside the encoded command any more: with the
+    # checksums (upstream 56af2c1) the resolved versions are 7 KB of JSON, which made that command 27000 characters or more,
+    # and Windows starts no process with a command line over 32767.
+    $env:AKOUSMA_ARCH_PARAMS_JSON = ($forward | ConvertTo-Json -Compress -Depth 8)
+    $command = "`$p = `$env:AKOUSMA_ARCH_PARAMS_JSON | ConvertFrom-Json -AsHashtable; Remove-Item Env:AKOUSMA_ARCH_PARAMS_JSON; " +
                "`$global:LASTEXITCODE = 0; try { & '$scriptLiteral' @p; exit `$LASTEXITCODE } " +
                "catch { Write-Host `"Error: `$_`" -ForegroundColor Red; exit 1 }"
     $started = $clock.Elapsed
     & $pwsh -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command)))
     $results[$a] = @{ Code = $LASTEXITCODE; Time = $clock.Elapsed - $started }
   }
+  Remove-Item Env:AKOUSMA_ARCH_PARAMS_JSON -ErrorAction SilentlyContinue
   Write-Host "`n==> Architectures" -ForegroundColor Magenta
   foreach ($a in $results.Keys) {
     $r = $results[$a]
