@@ -5647,7 +5647,9 @@ function Start-DownloadPrefetch {
   if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) { return $null }
   $table = GetPackageUrls
   $urls = @()
-  foreach ($c in $queue) { if ($table.ContainsKey($c)) { $urls += [string]$table[$c] } }
+  # The first URL of each package: the file's name comes from it. The package's own process verifies the checksum of what is
+  # here, and downloads the file again (then with the mirrors) when it is not the right one.
+  foreach ($c in $queue) { if ($table.ContainsKey($c)) { $urls += [string]@($table[$c])[0] } }
   if ($urls.Count -eq 0) { return $null }
   Write-Host "Prefetching $($urls.Count) source archives in the background..." -ForegroundColor Cyan
 
@@ -6061,7 +6063,9 @@ function Get-PackageFingerprint {
   $sources = [ordered]@{}
   $tool_patches = [ordered]@{}
   if ($recipe) {
-    foreach ($d in $recipe.Downloads) { $sources[$d] = if ($package_urls.ContainsKey($d)) { [string]$package_urls[$d] } else { "unknown" } }
+    # The first URL of a download: the one the file is named after, and what the stamps held before the mirrors were added
+    # (upstream 56af2c1), so they stay valid. The mirrors serve the same file (one checksum), so they don't count.
+    foreach ($d in $recipe.Downloads) { $sources[$d] = if ($package_urls.ContainsKey($d)) { [string]@($package_urls[$d])[0] } else { "unknown" } }
     foreach ($r in $recipe.GitRepos) { $sources["git:$r"] = Resolve-GitSourceId -repo $r -sync:$sync }
     foreach ($v in $recipe.VersionVars) { $sources["version:$v"] = [string](Get-Variable -Name $v -ValueOnly -ErrorAction SilentlyContinue) }
     foreach ($p in $recipe.ToolPatches) { $tool_patches[$p] = Get-NormalizedFileSha256 (Join-Path $patch_path $p) }
