@@ -6,3 +6,5 @@
 # Work folders, should build-akousma.sh's WORK_ROOT / PROJECT_ROOT point into this repository
 /Akousma/
 /data/
+build/
+downloads/
